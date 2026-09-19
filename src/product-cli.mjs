@@ -9,6 +9,7 @@ import { readDiskPolicy, saveDiskPolicy } from "./disk-policy.mjs";
 import { readRecentRoutes, readUsageReport } from "./product-service.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
 import { liveThreadRows } from "./thread-ledger.mjs";
+import { checkForUpdate, prepareUpdate } from "./update-service.mjs";
 import { readCallLog, readWatchState, summarizeCalls } from "./deepseek-watch.mjs";
 
 const store = new ModelStore();
@@ -268,6 +269,22 @@ async function main() {
     if (!route) throw new Error("模型不存在");
     await store.save({ ...route, hidden: process.argv[4] !== "off" }, data.revision);
     return { ...(await store.publicData()), message: `「${route.name}」${process.argv[4] === "off" ? "已取消隐藏" : "已隐藏（仍在工作窗口里可选）"}` };
+  }
+  if (command === "check-update") {
+    const currentVersion = id || "";
+    const platform = process.argv[4] || process.platform;
+    const variant = process.argv[5] || "installed";
+    const update = await checkForUpdate({ currentVersion, platform, variant });
+    return { ok: true, update, message: update.message };
+  }
+  if (command === "prepare-update") {
+    const currentVersion = id || "";
+    const platform = process.argv[4] || process.platform;
+    const appPid = Number(process.argv[5] || 0);
+    const appPath = process.argv[6] || "";
+    const portable = process.argv[7] === "portable";
+    const update = await prepareUpdate({ currentVersion, platform, root: store.root, appPid, appPath, portable });
+    return { ok: true, update, message: update.available ? (update.prepared ? `新版本 ${update.latestVersion} 已下载，准备安装` : update.message) : update.message };
   }
   if (command === "prepare") return service.prepare(id);
   if (command === "diagnostics") return service.diagnostics();

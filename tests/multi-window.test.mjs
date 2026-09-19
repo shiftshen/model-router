@@ -183,7 +183,8 @@ test("点一个第三方模型时复用已开着的窗口，不再新建", async
 test("官方入口打开的是 ChatGPT Desktop 默认资料，不新建空资料窗口", async (context) => {
   const store = await fixture(context);
   const service = new ProductService(store);
-  service.officialCodexRunning = async () => [{ pid: 4242, args: "/Applications/Codex.app/Contents/MacOS/ChatGPT" }];
+  service.officialCodexRunning = async () => [{ pid: 4242, args: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" }];
+  service.openOfficialDesktop = async () => ({ launched: true, appPath: "/Applications/ChatGPT.app", pid: 0 });
   const result = await service.openCodex("official");
   assert.equal(result.official, true);
   assert.equal(result.reused, true);

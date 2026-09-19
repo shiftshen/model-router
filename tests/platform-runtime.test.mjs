@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { linkSharedAsset, normalizeProcessText, parseWindowsAppxCandidates, windowsProcessRows } from "../src/platform-runtime.mjs";
+import { linkSharedAsset, normalizeProcessText, parseWindowsAppxCandidates, rankMacChatGPTAppCandidates, windowsProcessRows } from "../src/platform-runtime.mjs";
 
 test("Windows 进程 JSON 会规范成可供现有窗口解析器使用的正斜杠命令行", () => {
   const rows = windowsProcessRows(JSON.stringify([
@@ -29,6 +29,16 @@ test("AppX 清单候选兼容单对象与数组", () => {
   assert.equal(one[0].executable, "app\\ChatGPT.exe");
   const many = parseWindowsAppxCandidates(JSON.stringify([one[0], one[0]]));
   assert.equal(many.length, 2);
+});
+
+test("macOS 官方桌面候选优先新版 ChatGPT.app，同时保留 Codex.app 兼容", () => {
+  const ranked = rankMacChatGPTAppCandidates([
+    "/Applications/Codex.app",
+    "/Applications/ChatGPT.app",
+    "/Users/test/Applications/ChatGPT.app",
+  ]);
+  assert.equal(ranked[0], "/Applications/ChatGPT.app");
+  assert.ok(ranked.indexOf("/Applications/Codex.app") > ranked.indexOf("/Applications/ChatGPT.app"));
 });
 
 test("共享资源：文件与目录链接保持实时可见，Windows 不要求管理员 symlink", async (context) => {

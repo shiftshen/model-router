@@ -145,18 +145,55 @@ export function parseWindowsAppxCandidates(jsonText) {
     .filter((row) => row.installLocation && row.executable);
 }
 
+export function rankMacChatGPTAppCandidates(paths = []) {
+  const unique = [...new Set([
+    "/Applications/ChatGPT.app",
+    ...paths.map((value) => String(value ?? "").trim()).filter(Boolean),
+    "/Applications/Codex.app",
+  ])];
+  const score = (value) => {
+    if (value === "/Applications/ChatGPT.app") return 100;
+    if (/\/ChatGPT\.app$/i.test(value)) return 90;
+    if (value === "/Applications/Codex.app") return 80;
+    if (/\/Codex\.app$/i.test(value)) return 70;
+    return 10;
+  };
+  return unique.sort((a, b) => score(b) - score(a));
+}
+
+async function macBundleExecutable(appPath) {
+  const info = path.join(appPath, "Contents", "Info.plist");
+  let executable = "ChatGPT";
+  try {
+    const { stdout } = await execFileAsync("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleExecutable", info], { maxBuffer: 1024 * 1024 });
+    executable = String(stdout).trim() || executable;
+  } catch { }
+  const candidate = path.join(appPath, "Contents", "MacOS", executable);
+  try { await fs.access(candidate); return candidate; } catch { return ""; }
+}
+
+export async function findMacChatGPTAppBundle() {
+  if (isWindows) return null;
+  let dynamic = [];
+  try {
+    const query = 'kMDItemCFBundleIdentifier == "com.openai.codex"c || kMDItemFSName == "ChatGPT.app"c || kMDItemFSName == "Codex.app"c';
+    const { stdout } = await execFileAsync("/usr/bin/mdfind", [query], { maxBuffer: 2 * 1024 * 1024 });
+    dynamic = String(stdout).split("\n").map((line) => line.trim()).filter((line) => /\.app$/i.test(line));
+  } catch { }
+  for (const appPath of rankMacChatGPTAppCandidates(dynamic)) {
+    const executable = await macBundleExecutable(appPath);
+    if (executable) return { appPath, executable };
+  }
+  throw new Error("没有找到官方 ChatGPT Desktop（需要安装在 /Applications 下）。请先安装或更新官方 ChatGPT 桌面应用。");
+}
+
 export async function findCodexDesktopExecutable() {
   const override = String(process.env.CMA_CODEX_DESKTOP ?? "").trim();
   if (override) {
     try { await fs.access(override); return override; }
     catch { throw new Error(`CMA_CODEX_DESKTOP 指向的文件不存在：${override}`); }
   }
-  if (!isWindows) {
-    const mac = "/Applications/Codex.app/Contents/MacOS/ChatGPT";
-    try { await fs.access(mac); return mac; } catch {
-      throw new Error("没有找到 Codex/ChatGPT 桌面版（需要在 /Applications 下）。请先安装官方桌面版。");
-    }
-  }
+  if (!isWindows) return (await findMacChatGPTAppBundle()).executable;
   const script = [
     "$ErrorActionPreference='SilentlyContinue'",
     "$out=@()",
@@ -182,6 +219,19 @@ export async function findCodexDesktopExecutable() {
     try { await fs.access(executable); return executable; } catch { }
   }
   throw new Error("没有找到 Windows 版 ChatGPT/Codex。请先从 Microsoft Store 安装官方 ChatGPT 桌面应用；也可以用 CMA_CODEX_DESKTOP 指定可执行文件路径。");
+}
+
+export async function openOfficialChatGPTDesktop() {
+  if (!isWindows) {
+    const app = await findMacChatGPTAppBundle();
+    await execFileAsync("/usr/bin/open", [app.appPath], { maxBuffer: 1024 * 1024 });
+    return { launched: true, appPath: app.appPath, executable: app.executable, pid: 0 };
+  }
+  const executable = await findCodexDesktopExecutable();
+  const child = spawn(executable, [], { env: process.env, stdio: "ignore", detached: true, windowsHide: false });
+  await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+  child.unref();
+  return { launched: true, executable, pid: child.pid };
 }
 
 export async function spawnCodexDesktop(args = [], env = process.env) {

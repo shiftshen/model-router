@@ -37,6 +37,7 @@ import {
 import {
   activateProcess,
   findCodexDesktopExecutable,
+  openOfficialChatGPTDesktop,
   isWindows,
   killGatewayProcesses,
   linkSharedAsset,
@@ -129,7 +130,7 @@ export function parseRunningWindows(output, root) {
   return found;
 }
 
-// 官方 Codex 是否在跑：命令行里带 Codex.app 主程序、且完全不提助手目录的，就是官方实例。
+// 官方 ChatGPT Desktop 是否在跑：兼容新版 ChatGPT.app 与旧 Codex.app；完全不提助手目录的才是官方实例。
 // 助手自己开的窗口（含 crashpad 助手进程）命令行里一定有助手目录，所以不会被误判——
 // 误判成「官方在跑」会让我们白拒绝清理，误判成「没在跑」则会去动正在使用的官方库，两个方向都要防。
 export function parseOfficialRunning(output, root) {
@@ -140,7 +141,7 @@ export function parseOfficialRunning(output, root) {
   for (const original of String(output ?? "").split("\n")) {
     const line = normalizeProcessText(original);
     // 必须是主程序本身：macOS 的 ChatGPT 主程序，或 Windows Store/MSIX 的 ChatGPT/Codex.exe。
-    const macMain = /\/Codex\.app\/Contents\/MacOS\/ChatGPT(\s|$)/.test(line);
+    const macMain = /\/(ChatGPT|Codex)\.app\/Contents\/MacOS\/ChatGPT(\s|$)/i.test(line);
     const windowsMain = /\/(ChatGPT|Codex)\.exe[\"']?(\s|$)/i.test(line);
     if (!macMain && !windowsMain) continue;
     // 主进程没有 Chromium renderer/crashpad 的子进程参数；这些不能算官方窗口。
@@ -226,6 +227,7 @@ export class ProductService {
     this.store = store;
     // 官方库路径可注入：测试要把它指到临时目录，绝不能读到真实的 ~/.codex。
     this.officialHome = sharedHome;
+    this.openOfficialDesktop = openOfficialChatGPTDesktop;
   }
   async syncSharedRuntimeAssets(homePath) {
     for (const name of sharedRuntimeAssets) {
@@ -589,15 +591,18 @@ export class ProductService {
     const running = await this.officialCodexRunning();
     if (running.length) {
       const pid = running[0].pid;
-      const activated = await activateProcess(pid);
+      let activated = false;
+      try {
+        await this.openOfficialDesktop();
+        activated = true;
+      } catch {
+        activated = await activateProcess(pid);
+      }
       return { official: true, reused: true, pid, delivered: activated, message: activated ? `ChatGPT Desktop（官方）已经开着（PID ${pid}），已切到前台。` : `ChatGPT Desktop（官方）已经开着（PID ${pid}），没有重复启动；如未到前台请从 Dock 点一下。` };
     }
     await requireCodexApp();
-    const environment = { ...process.env };
-    // 关键：不能把助手窗口的变量带过去，否则开出来还是空资料。
-    for (const name of ["CODEX_HOME", "CMA_ROUTE_TOKEN", "CODEX_ELECTRON_USER_DATA_PATH", "OPENAI_API_KEY", "OPENAI_BASE_URL", "AGNES_API_KEY", "DEEPSEEK_API_KEY"]) delete environment[name];
-    const child = await spawnCodexDesktop([], environment);
-    return { official: true, reused: false, pid: child.pid, delivered: true, message: "已打开 ChatGPT Desktop（官方）：复用你原来的登录状态、任务库和官方模型选择器。" };
+    const opened = await this.openOfficialDesktop();
+    return { official: true, reused: false, pid: opened.pid ?? 0, delivered: true, message: "已打开 ChatGPT Desktop（官方）：复用你原来的登录状态、任务库和官方模型选择器。" };
   }
 
   // 侧边栏点一个模型时的默认动作。原则：已经开着的窗口优先复用，只有确实没有窗口时才新建。

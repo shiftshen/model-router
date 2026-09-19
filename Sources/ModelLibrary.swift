@@ -48,6 +48,23 @@ struct SwitchableModel: Decodable, Identifiable, Hashable {
     let `protocol`: String
 }
 
+struct UpdateInfo: Decodable, Identifiable {
+    var available: Bool
+    var currentVersion: String?
+    var latestVersion: String?
+    var tag: String?
+    var releaseUrl: String?
+    var publishedAt: String?
+    var notes: String?
+    var assetName: String?
+    var assetSize: Int64?
+    var downloadedPath: String?
+    var sha256: String?
+    var prepared: Bool?
+    var portable: Bool?
+    var id: String { latestVersion ?? tag ?? releaseUrl ?? "update" }
+}
+
 struct ProductResponse: Decodable {
     var ok: Bool
     var message: String?
@@ -74,6 +91,7 @@ struct ProductResponse: Decodable {
     var officialArchive: OfficialArchive?
     var officialCleanup: OfficialCleanupResult?
     var threads: [LiveThread]?
+    var update: UpdateInfo?
 }
 
 // 磁盘占用与可回收量。助手目录里同一批会话会在每个窗口各存一份，是这套多窗口机制最容易失控的地方。
@@ -293,6 +311,8 @@ final class LibraryViewModel: ObservableObject {
     @Published var officialArchive: OfficialArchive?
     @Published var showOfficialConfirm = false
     @Published var showCleanupConfirm = false
+    @Published var updateInfo: UpdateInfo?
+    @Published var showUpdateAlert = false
     private var revision = 0
     var selected: ManagedModel? { models.first { $0.id == selectedID } }
     var visible: [ManagedModel] {
@@ -410,7 +430,48 @@ final class LibraryViewModel: ObservableObject {
         if let value = response.cleanupPlan { diskPlan = value }
         if let value = response.diskPolicy { diskPolicy = value }
         if let value = response.officialArchive { officialArchive = value }
+        if let value = response.update { updateInfo = value }
         success = response.ok
+    }
+
+    func checkForUpdates(currentVersion: String, silent: Bool) async {
+        if !silent { message = "正在检查 GitHub 新版本…" }
+        let response = await call(["check-update", currentVersion, "darwin", "installed"], timeout: 60)
+        if response.ok, let update = response.update {
+            updateInfo = update
+            if update.available {
+                showUpdateAlert = true
+                if !silent { message = "发现新版本 \(update.latestVersion ?? "?")" }
+            } else if !silent {
+                message = update.currentVersion.map { "当前已是最新版本 \($0)" } ?? "当前已是最新版本"
+                success = true
+            }
+        } else if !silent {
+            accept(response)
+        }
+    }
+
+    func installUpdate(currentVersion: String) async {
+        guard updateInfo?.available == true else { return }
+        busy = true
+        success = nil
+        message = "正在从 GitHub 下载并校验更新…"
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let response = await call([
+            "prepare-update",
+            currentVersion,
+            "darwin",
+            String(pid),
+            Bundle.main.bundlePath,
+            "installed",
+        ], timeout: 900)
+        accept(response)
+        let prepared = response.update?.prepared == true
+        busy = false
+        if response.ok && prepared {
+            message = "更新已下载并校验，Model Router 将退出、安装并自动重开。"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { NSApp.terminate(nil) }
+        }
     }
 
     // 助手目录里同一批会话在每个窗口各存一份，堆积起来能到几十 GB，所以要能看见、能清。

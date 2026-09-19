@@ -416,14 +416,18 @@ test("官方库清理：只删已归档会话，未归档的与窗口数据一�
 
 test("官方实例判定：只有命令行里完全没提助手目录的 Codex 才算官方在跑", () => {
   const ps = [
+    "  100 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
     "  101 /Applications/Codex.app/Contents/MacOS/ChatGPT",
     "  202 /Applications/Codex.app/Contents/MacOS/ChatGPT --user-data-dir=/Users/x/.codex/model-assistant/router-v1/browser-data",
     "  303 /Applications/Codex.app/Contents/MacOS/ChatGPT --type=renderer --database=/Users/x/.codex/model-assistant/windows-v1/w2/browser-data/Crashpad",
     "  404 /usr/sbin/other --user-data-dir=/tmp/nope",
   ].join("\n");
   const found = parseOfficialRunning(ps, "/Users/x/.codex/model-assistant");
-  assert.deepEqual(found.map((entry) => entry.pid), [101]);
-  assert.equal(parseOfficialRunning(ps.replace("  101 /Applications/Codex.app/Contents/MacOS/ChatGPT\n", ""), "/Users/x/.codex/model-assistant").length, 0);
+  assert.deepEqual(found.map((entry) => entry.pid), [100, 101]);
+  const onlyManaged = ps
+    .replace("  100 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT\n", "")
+    .replace("  101 /Applications/Codex.app/Contents/MacOS/ChatGPT\n", "");
+  assert.equal(parseOfficialRunning(onlyManaged, "/Users/x/.codex/model-assistant").length, 0);
 });
 
 // 按时间清官方库旧会话：风险更高，所以必须显式给天数，并且默认先打包归档再删。

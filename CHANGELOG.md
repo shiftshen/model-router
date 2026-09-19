@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.1.0
+
+### ChatGPT Desktop compatibility
+- Replaced the hard-coded macOS Codex.app dependency with dynamic ChatGPT Desktop discovery using the current ChatGPT.app, bundle id `com.openai.codex`, Spotlight, and legacy fallback.
+- Official activation now uses macOS `open`, so it does not depend on Accessibility permission.
+- Routed work windows use the same current official desktop resolver.
+
+### GitHub updater
+- Added startup and 6-hour GitHub Release update checks with a manual Check for Updates action.
+- macOS downloads the notarized DMG, verifies SHA256/codesign/Gatekeeper, atomically replaces the app and reopens it.
+- Windows installed builds download/verify the Setup installer; Portable builds download the new portable EXE without unsafe self-overwrite.
+
 ## 3.0.3
 
 ### Conversation attribution

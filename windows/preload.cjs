@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld("cma", {
   openDataDir() {
     return ipcRenderer.invoke("cma:open-data-dir");
   },
+  installUpdate(path, portable, releaseUrl) {
+    return ipcRenderer.invoke("cma:install-update", { path, portable, releaseUrl });
+  },
   platform() {
     return ipcRenderer.invoke("cma:platform");
   }

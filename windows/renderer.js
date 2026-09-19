@@ -1,4 +1,5 @@
-let state = { revision: 0, routes: [], windows: [], threads: [], switchModels: [], todayUsage: null, fallbacks: [] };
+let state = { revision: 0, routes: [], windows: [], threads: [], switchModels: [], todayUsage: null, fallbacks: [], update: null };
+let platformInfo = { platform: "win32", arch: "x64", version: "0.0.0", packaged: false, portable: false };
 const byId = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
 
@@ -86,9 +87,30 @@ function renderFallbacks() {
   target.innerHTML = '<section class="fallback-card ' + (recent ? "recent" : "stale") + '"><strong>' + (recent ? "备用模型触发记录" : "历史备用切换记录") + '：' + escapeHtml(f.fromName) + ' → ' + escapeHtml(f.toName) + '</strong><div>fallback 只对那一次失败请求生效，不代表窗口或所有对话持续使用备用模型。</div><div class="muted">时间：' + escapeHtml(f.at) + ' · 原因：' + escapeHtml(f.reason || "未记录") + '</div><div class="muted">当前规则：' + (stillConfigured ? "仍配置该备用，下次失败仍可能触发" : "该备用配置已经不存在，这里只是历史记录") + '</div>' + threadHtml + '</section>';
 }
 
+function renderUpdate() {
+  const target = byId("updateBanner");
+  const update = state.update;
+  if (!update || !update.available) { target.innerHTML = ""; return; }
+  const mode = platformInfo.portable ? "Portable：下载新版后手动替换旧文件" : "安装版：确认后自动下载、校验并安装";
+  target.innerHTML = '<section class="fallback-card recent"><strong>发现 Model Router ' + escapeHtml(update.latestVersion || "新版本") + '</strong><div>' + escapeHtml(mode) + '</div><div class="muted">更新源：GitHub Releases · ' + escapeHtml(update.assetName || "") + '</div><button data-update-install="1">' + (platformInfo.portable ? "下载新版" : "下载并安装") + '</button></section>';
+}
+
+async function checkUpdate(silent) {
+  try {
+    if (!silent) setStatus("正在检查 GitHub 新版本…");
+    const variant = platformInfo.portable ? "portable" : "installed";
+    const result = await call("check-update", [platformInfo.version, "win32", variant]);
+    state.update = result.update || null;
+    renderUpdate();
+    if (!silent) setStatus(result.message || (state.update && state.update.available ? "发现新版本" : "当前已是最新版本"));
+  } catch (error) {
+    if (!silent) setStatus(error.message, true);
+  }
+}
+
 function accept(data) {
   state = { ...state, ...data };
-  renderUsage(); renderWindows(); renderThreads(); renderModels(); renderFallbacks();
+  renderUsage(); renderWindows(); renderThreads(); renderModels(); renderFallbacks(); renderUpdate();
 }
 
 async function refresh() {
@@ -164,6 +186,15 @@ document.addEventListener("click", async (event) => {
     if (el.dataset.probeModel) { setStatus("正在真实验证…"); accept(await call("probe", [el.dataset.probeModel])); return; }
     if (el.dataset.winOpen) { setStatus("正在打开窗口…"); accept(await call("open-window", [el.dataset.winOpen])); return; }
     if (el.dataset.winClose) { setStatus("正在关闭窗口…"); accept(await call("close-window", [el.dataset.winClose])); return; }
+    if (el.dataset.updateInstall) {
+      const variant = platformInfo.portable ? "portable" : "installed";
+      setStatus("正在从 GitHub 下载并校验更新…");
+      const result = await call("prepare-update", [platformInfo.version, "win32", "0", "", variant]);
+      state.update = result.update || state.update;
+      const action = await window.cma.installUpdate(state.update.downloadedPath, !!state.update.portable, state.update.releaseUrl || "");
+      setStatus(action.message || result.message || "更新已准备");
+      return;
+    }
     if (el.dataset.threadOpen) {
       const key = el.dataset.threadOpen;
       setStatus("正在打开对话所在窗口…");
@@ -179,6 +210,7 @@ document.addEventListener("click", async (event) => {
 byId("refreshBtn").addEventListener("click", refresh);
 byId("diagBtn").addEventListener("click", async () => { try { setStatus("正在诊断…"); setStatus((await call("diagnostics")).message || "诊断完成"); } catch(e){ setStatus(e.message,true); } });
 byId("dataBtn").addEventListener("click", () => window.cma.openDataDir());
+byId("updateBtn").addEventListener("click", () => checkUpdate(false));
 byId("addBtn").addEventListener("click", () => openEditor(null));
 byId("showArchived").addEventListener("change", renderModels);
 byId("modelSearch").addEventListener("input", renderModels);
@@ -186,7 +218,9 @@ byId("newWindowBtn").addEventListener("click", async () => { try { const id = by
 byId("modelForm").addEventListener("submit", saveEditor);
 
 (async () => {
-  const info = await window.cma.platform();
-  byId("subtitle").textContent = "Windows Preview · v" + info.version + " · " + info.arch;
+  platformInfo = await window.cma.platform();
+  byId("subtitle").textContent = "Windows Preview · v" + platformInfo.version + " · " + platformInfo.arch + (platformInfo.portable ? " · Portable" : "");
   await refresh();
+  await checkUpdate(true);
+  setInterval(() => checkUpdate(true), 6 * 60 * 60 * 1000);
 })();

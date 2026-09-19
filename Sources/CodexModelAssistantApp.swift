@@ -1,9 +1,11 @@
 import AppKit
+import Combine
 import SwiftUI
 
 struct ModelLibraryView: View {
     // 标题栏的版本号从 bundle 读，别写死——写死过一次就变成「装的明明是新版，界面还显示旧版」。
     private var bundleVersion: String { (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "?" }
+    private let updateTimer = Timer.publish(every: 6 * 3600, on: .main, in: .common).autoconnect()
 
     @StateObject private var library = LibraryViewModel()
     @State private var editing: ManagedModel?
@@ -52,10 +54,26 @@ struct ModelLibraryView: View {
         } message: {
             Text(library.officialCleanupPrompt)
         }
+        .alert(isPresented: $library.showUpdateAlert) {
+            let latest = library.updateInfo?.latestVersion ?? "新版本"
+            let note = library.updateInfo?.notes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let summary = note.isEmpty ? "GitHub 上有新的 Model Router 版本。" : String(note.prefix(700))
+            return Alert(
+                title: Text("发现 Model Router \(latest)"),
+                message: Text(summary),
+                primaryButton: .default(Text("下载并安装")) {
+                    Task { await library.installUpdate(currentVersion: bundleVersion) }
+                },
+                secondaryButton: .cancel(Text("稍后"))
+            )
+        }
         // 从 Codex 切回来就自动刷新一次：用户刚在 Codex 顶部换了模型，
         // 卡片上的「当前模型」必须立刻跟上，否则又变成「我切了但界面没变」。
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await library.openSwitch() }
+        }
+        .onReceive(updateTimer) { _ in
+            Task { await library.checkForUpdates(currentVersion: bundleVersion, silent: true) }
         }
         .onAppear { sizeWindowOnce() }
         .task {
@@ -63,6 +81,7 @@ struct ModelLibraryView: View {
             await library.openSwitch()
             // 启动时就把磁盘占用算出来，底部的状态条才有内容。
             await library.refreshDisk()
+            await library.checkForUpdates(currentVersion: bundleVersion, silent: true)
             if library.newWindowModel.isEmpty, let first = library.switchModels.first { library.newWindowModel = first.id }
         }
     }
@@ -91,6 +110,11 @@ struct ModelLibraryView: View {
             }
             Spacer()
             if library.busy { ProgressView().controlSize(.small) }
+            if library.updateInfo?.available == true {
+                Button("新版 \(library.updateInfo?.latestVersion ?? "")") { library.showUpdateAlert = true }
+                    .controlSize(.small)
+                    .help("GitHub 上有新版，点击查看并安装")
+            }
             Button { Task { await library.openSwitch() } } label: { Image(systemName: "arrow.clockwise") }
                 .help("刷新窗口状态")
             Button { showModels = true } label: { Label("模型库（\(library.models.count)）", systemImage: "slider.horizontal.3") }
@@ -101,6 +125,7 @@ struct ModelLibraryView: View {
                     Task { await library.perform("diagnostics") }
                 }
                 Button("打开 ChatGPT Desktop（官方）") { Task { await library.openCodex("official") } }
+                Button("检查更新…") { Task { await library.checkForUpdates(currentVersion: bundleVersion, silent: false) } }
                 Divider()
                 Divider()
                 Button("导入模型配置…") { Task { await library.importLibrary() } }

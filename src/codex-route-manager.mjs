@@ -6,11 +6,11 @@ import path from "node:path";
 
 import { detectRoute, routeDefinitions } from "./route-config.mjs";
 import { applyRoute, checkModelsEndpoint, prepareInstance } from "./route-manager-lib.mjs";
+import { findCodexDesktopExecutable } from "./platform-runtime.mjs";
 
 const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const configPath = path.join(codexHome, "config.toml");
 const backupDirectory = path.join(codexHome, "model-assistant", "backups");
-const codexBinary = "/Applications/Codex.app/Contents/Resources/codex";
 
 function print(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -42,6 +42,9 @@ async function readSecret(routeId) {
 }
 
 async function validateConfig() {
+  const desktopExecutable = await findCodexDesktopExecutable();
+  const appRoot = desktopExecutable.replace(/[\\/]Contents[\\/]MacOS[\\/][^\\/]+$/, "");
+  const codexBinary = path.join(appRoot, "Contents", "Resources", "codex");
   const result = await run(codexBinary, ["--strict-config", "--version"]);
   return {
     ok: result.code === 0,

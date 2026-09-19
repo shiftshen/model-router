@@ -12,7 +12,7 @@ const allowedCommands = new Set([
   "live-threads", "continue", "switch-status", "windows", "refresh-catalogs",
   "new-window", "open-window", "rename-window", "close-window", "delete-window",
   "adopt-window", "disk-usage", "cleanup-plan", "diagnostics", "export",
-  "enable-switching", "disable-switching", "set-fallback", "hide"
+  "enable-switching", "disable-switching", "set-fallback", "hide", "check-update", "prepare-update"
 ]);
 
 function runtimeDir() {
@@ -111,7 +111,7 @@ ipcMain.handle("cma:call", async (_event, request) => {
   const command = String(request && request.command || "");
   const args = request && request.args || [];
   const input = request && request.input != null ? request.input : null;
-  return callCli(command, args, input);
+  return callCli(command, args, input, command === "prepare-update" ? 900000 : 180000);
 });
 
 ipcMain.handle("cma:open-data-dir", async () => {
@@ -120,11 +120,38 @@ ipcMain.handle("cma:open-data-dir", async () => {
   return result ? { ok: false, message: result } : { ok: true };
 });
 
+ipcMain.handle("cma:install-update", async (_event, request) => {
+  const downloaded = path.resolve(String(request && request.path || ""));
+  const releaseUrl = String(request && request.releaseUrl || "");
+  const portable = Boolean(request && request.portable);
+  const updatesRoot = path.resolve(os.homedir(), ".codex", "model-assistant", "updates") + path.sep;
+  if (!downloaded.startsWith(updatesRoot) || !downloaded.toLowerCase().endsWith(".exe")) {
+    return { ok: false, message: "更新文件路径不安全" };
+  }
+  if (portable) {
+    shell.showItemInFolder(downloaded);
+    if (releaseUrl) await shell.openExternal(releaseUrl);
+    return { ok: true, message: "新版 Portable 已下载；已在文件夹中定位，请关闭旧版后使用新文件。" };
+  }
+  const pid = process.pid;
+  const escaped = downloaded.replaceAll("'", "''");
+  const script = `$pidToWait=${pid}; while(Get-Process -Id $pidToWait -ErrorAction SilentlyContinue){Start-Sleep -Milliseconds 250}; Start-Process -FilePath '${escaped}' -ArgumentList '/S'`;
+  const child = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.unref();
+  setTimeout(() => app.quit(), 300);
+  return { ok: true, message: "更新已校验，退出后自动安装并可从开始菜单重新打开。" };
+});
+
 ipcMain.handle("cma:platform", () => ({
   platform: process.platform,
   arch: process.arch,
   version: app.getVersion(),
-  packaged: app.isPackaged
+  packaged: app.isPackaged,
+  portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE)
 }));
 
 app.whenReady().then(createWindow);

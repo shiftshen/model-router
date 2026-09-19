@@ -14,8 +14,8 @@
 
 | | |
 |---|---|
-| 版本 | **3.0.3** |
-| 安装包 | `release/Model-Router-3.0.3-universal.dmg`（通用二进制：Apple Silicon + Intel） |
+| 版本 | **3.1.0** |
+| 安装包 | `release/Model-Router-3.1.0-universal.dmg`（通用二进制：Apple Silicon + Intel） |
 | 系统要求 | macOS 12.0 起 |
 | SHA-256 | 见 `release/SHA256SUMS.txt` |
 | 签名 | Developer ID Application（Chinda Lorcharoen）；正式 Release 执行 Apple notarization + staple，并用 `spctl` / `stapler` 验证 |
@@ -39,6 +39,7 @@ zsh scripts/package-release.sh   # 出 dmg、追加 SHA-256；有公证凭据时
 - Brand Guide：`assets/brand/model-router-brand-guide.png`
 - 规范：`docs/BRAND.md`
 - 3.0 发布说明：`docs/RELEASE-3.0.md`
+- 3.1 发布说明：`docs/RELEASE-3.1.md`
 
 3.0 只修改用户可见品牌；`local.shift.codex-model-assistant`、`~/.codex/model-assistant` 和 `local.shift.codex-model-gateway` 暂时保留，确保 2.x 原有配置、Key、窗口和会话直接升级。
 
@@ -56,7 +57,7 @@ Windows 版随 3.0 品牌统一，目标 Windows 10/11 x64，仍标记为 Previe
 ## 功能
 
 - 第三方模型库与官方 ChatGPT 登录：DeepSeek 等走各自的官方接口，官方入口用 ChatGPT OAuth，互不影响。
-- **2.8.3 官方入口唯一化**：官方只保留一个「ChatGPT Desktop（官方）」入口。点击它直接启动/激活 `/Applications/Codex.app` 的默认资料，复用你本机已有登录状态、任务库与官方模型选择器；历史 `official-gpt-*` 伪官方条目会自动迁移删除，不再出现在工作窗口模型下拉框。
+- **3.1.0 官方 App 动态兼容**：官方只保留一个「ChatGPT Desktop（官方）」入口。macOS 优先发现 `/Applications/ChatGPT.app`，并按 bundle id `com.openai.codex` 动态发现、兼容旧 `/Applications/Codex.app`；官方频繁更新 App 路径/内部 Framework 时不再依赖旧固定路径。
 - **2.8.4 首页固定官方入口**：窗口区第一张卡就是「ChatGPT Desktop（官方）」，右上角菜单也有同名入口。不要再靠 Dock 的 ChatGPT/Codex 图标区分，因为官方与可切换窗口来自同一个 App bundle；从这张卡进入就一定走默认资料。
 - **2.8.5 模型库重排**：侧栏加宽到 360pt，模型条目改成名称 / 供应商 / 模型 ID 三行信息卡；磁盘区压成底部一行摘要，新增/筛选移到顶部，避免模型列表被磁盘和开关挤到只剩一小条。
 - 本地模型（Ollama 上的 Ornith / Qwen）降级为**可选供应商**：未通过开发能力验收，已归档，默认不出现，可在「显示归档模型」里查看；重新评估的条件见 `docs/LOCAL-QUALIFICATION.md`。
@@ -68,6 +69,7 @@ Windows 版随 3.0 品牌统一，目标 Windows 10/11 x64，仍标记为 Previe
 - 每个模型条目独立窗口、任务库和模型配置，多开不修改全局默认模型。
 - **3.0.1 多开智能配置统一**：官方 ChatGPT Desktop 与所有隔离 `CODEX_HOME` 工作窗口共用全局 `AGENTS.md`、skills、plugins、hooks 和认证资源；窗口配置从 `~/.codex/config.toml` 继承 reasoning / plan / agents 配置，只覆盖模型与 provider。默认开发推理统一为 Medium，避免不同窗口出现 low 导致的明显能力落差。
 - **3.0.3 对话/fallback 可追踪**：route-log 与 fallback 事件记录 `sessionId`；首页活动对话显示所属窗口、目录、Thread ID 并可点击打开对应窗口。fallback 明确区分“历史单次触发”和当前配置，不再让旧事件看起来像所有对话都在持续使用备用模型。
+- **3.1.0 GitHub 在线更新**：启动时和每 6 小时静默检查 `shiftshen/model-router` Releases；macOS 可下载/校验 notarized DMG 后自动替换并重开，Windows 安装版下载并校验 Setup 后安装，Portable 只下载提醒。无需自建更新服务器。
 - 窗口多开：任意数量窗口同时运行，每个窗口自带一份 `CODEX_HOME` 与浏览器数据目录（`--user-data-dir` 与 `CODEX_ELECTRON_USER_DATA_PATH` 同值），互不干扰，也和 ChatGPT Desktop（官方）的 Electron 状态完全隔离；窗口列表里可以新建、打开、关闭、重命名、删除，底层按平台读取真实进程命令行判定哪个窗口在跑（PID 一并显示）。
 - 无密钥 JSON 导入导出、原子配置写入、冲突检查、备份、诊断。
 - loopback 网关按实例令牌鉴权；Responses、Chat Completions、Anthropic Messages 三类接口。

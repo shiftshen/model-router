@@ -45,3 +45,24 @@ test("fallback banner 必须说明 fallback 是单次请求，不得暗示整窗
   assert.match(block, /当前规则/);
   assert.match(block, /Thread ID/);
 });
+
+test("macOS 在线更新入口必须保留启动检查、周期检查与安装动作", async () => {
+  const source = await fs.readFile(sourcePath, "utf8");
+  assert.match(source, /Timer\.publish\(every: 6 \* 3600/);
+  assert.match(source, /checkForUpdates\(currentVersion: bundleVersion, silent: true\)/);
+  assert.match(source, /Button\("检查更新…"\)/);
+  assert.match(source, /installUpdate\(currentVersion: bundleVersion\)/);
+  assert.ok(source.includes('Button("新版 \\(library.updateInfo?.latestVersion'));
+});
+
+test("Windows 在线更新入口必须保留检查按钮、启动检查与安装 IPC", async () => {
+  const renderer = await fs.readFile(new URL("../windows/renderer.js", import.meta.url), "utf8");
+  const main = await fs.readFile(new URL("../windows/main.mjs", import.meta.url), "utf8");
+  const html = await fs.readFile(new URL("../windows/index.html", import.meta.url), "utf8");
+  assert.match(html, /id="updateBtn"/);
+  assert.match(renderer, /checkUpdate\(true\)/);
+  assert.match(renderer, /prepare-update/);
+  assert.match(renderer, /installUpdate/);
+  assert.match(main, /cma:install-update/);
+  assert.match(main, /prepare-update/);
+});

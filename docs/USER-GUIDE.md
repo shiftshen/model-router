@@ -1,10 +1,18 @@
-# Model Router 3.0 使用手册
+# Model Router 3.1 使用手册
 
 ## 安装与首次启动
 
-将「Model Router.app」放入 Applications，打开即可。3.0.0 是 Universal 构建（Apple Silicon + Intel），内置两套已校验 SHA-256 的 Node.js 24.20.0，无需安装 Homebrew 或手动设置环境变量。需要另行安装 Codex App（默认路径 `/Applications/Codex.app`）。最低 macOS 12.0；发布前会同时校验 arm64/x86_64 slice、签名与安装包。
+将「Model Router.app」放入 Applications，打开即可。Model Router 是 Universal 构建（Apple Silicon + Intel），内置两套已校验 SHA-256 的 Node.js 24.20.0，无需安装 Homebrew 或手动设置环境变量。需要另行安装官方 ChatGPT Desktop；助手会优先发现 `/Applications/ChatGPT.app`，并兼容旧 `/Applications/Codex.app` 与 bundle id `com.openai.codex`。最低 macOS 12.0；发布前会同时校验 arm64/x86_64 slice、签名与安装包。
 
 助手首次启动会初始化模型库并启动本机网关。已存在的本机 DeepSeek / Agnes 私有 Key 会迁移一次，不打印明文；全新机器需要用户自行填写 Key。API 供应商与 ChatGPT 订阅分别计费。模型助手本身不代理充值或计费。
+
+## 在线更新
+
+3.1.0 起，Model Router 直接使用 GitHub Releases 作为更新源，不需要自建服务器。应用启动时静默检查一次，运行期间每 6 小时检查一次；也可在右上角菜单选择「检查更新…」。有新版时由用户确认后才下载和安装。
+
+macOS 会下载正式 notarized DMG，核对 Release SHA256、DMG、代码签名与 Gatekeeper 后退出旧版、替换 `/Applications/Model Router.app` 并自动重开。Windows 安装版下载并校验 Setup 安装器后更新；Portable 版只下载新版文件并定位，不在运行中强制覆盖。更新过程不会修改 `~/.codex/model-assistant`，模型、API Key、窗口和会话保留。
+
+3.0.x 本身没有 updater，因此从 3.0.x 到 3.1.0 需要最后一次手工安装；安装 3.1.0 后，后续版本可在应用内完成更新。
 
 ## 添加、修改与更换 Key
 
@@ -20,7 +28,7 @@
 
 ### 官方入口：ChatGPT Desktop / Codex 原版
 
-3.0 起，官方只保留一个「ChatGPT Desktop（官方）」入口。点击它时助手不会创建独立 `CODEX_HOME`，也不会传 `--user-data-dir`；如果原版 Codex 已经运行，会直接把该进程切到前台，否则按默认资料启动 `/Applications/Codex.app`。因此会复用你已经登录好的 ChatGPT/Codex 账号、原任务库和官方顶部模型选择器。
+3.1 起，官方只保留一个「ChatGPT Desktop（官方）」入口。点击它时助手不会创建独立 `CODEX_HOME`，也不会传 `--user-data-dir`；macOS 会动态发现当前官方 ChatGPT Desktop（优先 `/Applications/ChatGPT.app`，兼容 bundle id `com.openai.codex` 与旧 `/Applications/Codex.app`），并用系统 `open` 启动或置前，因此不依赖辅助功能权限，也不再因 OpenAI 更新 App 名称/内部 Framework 而写死旧路径。
 
 历史版本创建过的 `官方 · GPT-6 Astra / GPT-5.6 Sol / Terra / Luna / GPT-5.5` 隐藏条目属于旧的代理方案，升级后会自动从模型库清理，并且不再进入工作窗口的模型下拉框。官方模型的具体选择交给原版 Codex 自己，不由助手重复维护。
 
