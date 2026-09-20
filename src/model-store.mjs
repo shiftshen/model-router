@@ -47,12 +47,14 @@ export function normalizeEndpoint(input) {
 export function validateRoute(input) {
   if (!validID(input.id)) throw new Error("模型标识无效");
   const route = {};
-  for (const key of ["id", "name", "vendor", "endpoint", "protocol", "model", "notes", "docs", "credentialID", "fallback"]) {
+  for (const key of ["id", "name", "vendor", "endpoint", "protocol", "model", "notes", "docs", "credentialID", "fallback", "runtimeProfile"]) {
     route[key] = String(input[key] ?? "").trim();
     if (route[key].length > (key === "notes" ? 2000 : 500) || /[\u0000-\u001f]/.test(route[key])) throw new Error("字段过长或包含控制字符");
   }
   if (!route.name) throw new Error("请输入模型名称");
   if (!["oauth", "responses", "chat", "anthropic", "chatgpt"].includes(route.protocol)) throw new Error("不支持此接口协议");
+  route.runtimeProfile ||= "auto";
+  if (!["auto", "lite", "full"].includes(route.runtimeProfile)) throw new Error("Codex 环境应为 auto / lite / full");
   if (route.protocol === "oauth" && route.id !== "official") throw new Error("ChatGPT 登录仅用于官方入口");
   if (route.id === "official" && route.protocol !== "oauth") throw new Error("官方入口不能更换协议");
   if (route.protocol === "oauth") {
@@ -60,6 +62,7 @@ export function validateRoute(input) {
     route.model = "";
     route.endpoint = "";
     route.credentialID = route.id;
+    route.runtimeProfile = "full";
   }
   if (route.protocol === "chatgpt") {
     // 官方模型走 Codex 自己的 ChatGPT 登录，不需要地址和密钥。

@@ -813,6 +813,8 @@ struct ModelLibraryView: View {
                 Divider()
                 row("本窗口模型", model.protocol == "oauth" ? "由 ChatGPT Desktop 内选择" : (model.switchable == true ? "可切换全部模型" : "仅此模型"))
                 Divider()
+                row("Codex 环境", model.protocol == "oauth" ? "Full · 官方" : ((model.runtimeProfile ?? "auto") == "full" ? "Full · 完整工具" : ((model.runtimeProfile ?? "auto") == "lite" ? "Lite · 轻量" : "Auto · 本地轻量 / 云端完整")))
+                Divider()
                 row("失败时改用", model.protocol == "oauth" ? "不适用" : (model.fallback.flatMap { id in library.models.first { $0.id == id }?.name } ?? "未设置"))
             }.padding(.horizontal, 16).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
             HStack(spacing: 10) {

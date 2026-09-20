@@ -137,6 +137,7 @@ function openEditor(route) {
   byId("modelEndpoint").value = current.endpoint || "";
   byId("modelKey").value = "";
   byId("modelContext").value = current.contextWindow || "";
+  byId("modelRuntimeProfile").value = current.runtimeProfile || "auto";
   byId("modelNoKey").checked = !!current.noKey;
   byId("modelSwitchable").checked = current.switchable !== false;
   byId("modelFallback").innerHTML = '<option value="">不设置</option>' + (state.routes || []).filter((x) => x.id !== current.id && x.protocol !== "oauth" && !x.archived).map((x) => '<option value="' + escapeHtml(x.id) + '">' + escapeHtml(x.name) + '</option>').join("");
@@ -160,6 +161,7 @@ async function saveEditor(event) {
     docs: prior.docs || "",
     credentialID: prior.credentialID || id,
     noKey: byId("modelNoKey").checked,
+    runtimeProfile: byId("modelRuntimeProfile").value,
     archived: !!prior.archived,
     hidden: !!prior.hidden,
     switchable: byId("modelSwitchable").checked,

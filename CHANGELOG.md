@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.2.0
+
+### Codex runtime profiles
+- Added Auto / Lite / Full selection to the macOS and Windows model editors. Auto selects Lite for local endpoints without an API key and Full for cloud models.
+- Lite homes use a small configuration and short AGENTS file, without inheriting global plugins, MCP servers, skills, hooks or historical project rules.
+- Preserve core terminal/editing tools and project requirements; Full requests retain their original tools and instructions.
+- Resolve each window's environment from its current or starting model, including legacy instances and continuations. Running windows apply environment changes after reopening.
+- Safely remove shared symlinks/junctions/hard links without modifying global source assets.
+- Filter oversized tool catalogs before forwarding Lite requests and use the filtered request when rechecking context limits.
+- Context-overflow retries now regenerate the Lite payload after compaction; system/developer requirements survive history summarization.
+
+### Validation and scope
+- Added payload, config-size and shared-asset regression coverage.
+- Global configuration cleanup is a local opt-in operation, not an automatic change on other users' machines. See `docs/RELEASE-3.2.md` for scope and measured examples.
+- Windows remains Preview pending real desktop GUI acceptance; Windows CI builds and verifies Setup and Portable packages.
+
 ## 3.1.0
 
 ### ChatGPT Desktop compatibility

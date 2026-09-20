@@ -65,6 +65,15 @@ struct ModelEditor: View {
                         }
                     }
                     Text("额度用尽、限流或服务异常时自动改用这个模型，任务不用重来；正常时不调用它。改用的模型在回复里不会额外提示。").font(.caption).foregroundStyle(.secondary)
+                    Picker("Codex 环境", selection: Binding(
+                        get: { draft.runtimeProfile ?? "auto" },
+                        set: { draft.runtimeProfile = $0 }
+                    )) {
+                        Text("自动（本地无 Key 模型用轻量）").tag("auto")
+                        Text("轻量 Lite（少工具 / 少上下文）").tag("lite")
+                        Text("完整 Full（Plugins / MCP / Skills）").tag("full")
+                    }
+                    Text("Auto 对本地无 Key 模型使用 Lite，云端模型使用 Full。环境类型更改后重开窗口生效；需要连接器、WebCodex 或完整工具生态时可选择 Full。").font(.caption).foregroundStyle(.secondary)
                     Toggle("无需 API Key（本地服务）", isOn: $draft.noKey)
                     if !draft.noKey {
                         SecureField(draft.hasKey == true ? "新 API Key（留空保留）" : "API Key", text: $key).textContentType(.password)

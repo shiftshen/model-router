@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { ModelStore, validateRoute, atomicJSON } from "../src/model-store.mjs";
-import { ProductService, renderProductConfig } from "../src/product-service.mjs";
+import { ProductService, renderProductConfig, renderRouterConfig, resolveRuntimeProfile } from "../src/product-service.mjs";
 import { toChat, toAnthropic, fromCompletion, responseEvents, nativePayload } from "../src/protocol-adapter.mjs";
 import { createGateway, upstream, estimateTokens, contextBudget } from "../src/model-gateway.mjs";
 import { staleDays } from "../src/disk-cleanup.mjs";
@@ -49,6 +49,35 @@ test("seeds mainstream providers without pretending keys exist", async (context)
   assert.ok(data.routes.filter((route) => route.id.startsWith("s5090-")).every((route) => route.protocol === "chat"));
   assert.equal(data.routes.find((route) => route.id === "official").name, "ChatGPT Desktop（官方）");
   assert.equal(data.routes.find((route) => route.id === "official").model, "");
+});
+
+test("Codex 环境 Auto：本地无 Key 默认 Lite，云端 Full，显式设置优先", () => {
+  const local = validateRoute({ id:"local-lite", name:"Local", vendor:"local", endpoint:"http://127.0.0.1:18081/v1", protocol:"chat", model:"m", noKey:true, runtimeProfile:"auto" });
+  const cloud = validateRoute({ id:"cloud-full", name:"Cloud", vendor:"cloud", endpoint:"https://api.example.com/v1", protocol:"chat", model:"m", noKey:false, runtimeProfile:"auto" });
+  assert.equal(resolveRuntimeProfile(local), "lite");
+  assert.equal(resolveRuntimeProfile(cloud), "full");
+  assert.equal(resolveRuntimeProfile({ ...local, runtimeProfile:"full" }), "full");
+  assert.equal(resolveRuntimeProfile({ ...cloud, runtimeProfile:"lite" }), "lite");
+  assert.throws(() => validateRoute({ ...local, runtimeProfile:"turbo" }), /Codex 环境/);
+});
+
+test("Lite 配置不继承全局 Plugins/MCP/Skills/Agents/Projects，只保留顶层基础参数与当前 provider", () => {
+  const source = `model = "gpt-5.6-sol"\nmodel_reasoning_effort = "medium"\nplan_mode_reasoning_effort = "medium"\n\n[agents]\nenabled = true\n\n[projects."/tmp/demo"]\ntrust_level = "trusted"\n\n[plugins."browser"]\nenabled = true\n\n[mcp_servers.playwright]\ncommand = "npx"\n`;
+  const route = validateRoute({ id:"lite-route", name:"Lite", vendor:"local", endpoint:"http://127.0.0.1:18081/v1", protocol:"chat", model:"ternary-bonsai-2-27b", noKey:true, runtimeProfile:"auto" });
+  const output = renderProductConfig(source, route, "/tmp/catalog.json");
+  assert.match(output, /^model_reasoning_effort = "medium"$/m);
+  assert.doesNotMatch(output, /^plan_mode_reasoning_effort/m);
+  assert.ok(Buffer.byteLength(output) < 2048);
+  assert.equal((output.match(/^\[/gm) || []).length, 2);
+  assert.match(output, /\[model_providers\.cma_lite_route\]/);
+  assert.doesNotMatch(output, /\[agents\]/);
+  assert.doesNotMatch(output, /\[projects\./);
+  assert.doesNotMatch(output, /\[plugins\./);
+  assert.doesNotMatch(output, /\[mcp_servers\./);
+
+  const router = renderRouterConfig(source, { model:"ternary-bonsai-2-27b", catalogPath:"/tmp/catalog.json", runtimeProfile:"lite" });
+  assert.doesNotMatch(router, /\[agents\]|\[plugins\.|\[mcp_servers\.|\[projects\./);
+  assert.match(router, /\[model_providers\.cma_router\]/);
 });
 
 test("升级会自动删除旧 official-gpt-* 代理，只保留唯一的 ChatGPT Desktop 官方入口", async (context) => {
@@ -499,14 +528,17 @@ test("base64 截图不再被当成文本：图片按张计价，估算不再凭�
 
 // 预检没算准、供应商仍然报「上下文超了」时，网关要自己补一次压缩再重试。
 // Codex 不会做这件事——实测它只会把这一轮标记失败，对话就此断掉。
-test("供应商报上下文超限时，网关压缩后重试，用户看到的仍是正常回答", async (context) => {
+for (const runtimeProfile of ["full", "lite"]) {
+test(`供应商超限后 ${runtimeProfile} 重试使用压缩历史并保留开发约束`, async (context) => {
   const store = await fixture(context);
   let hits = 0;
+  const forwarded = [];
   const upstreamURL = await listen(http.createServer((request, response) => {
     let body = "";
     request.on("data", (chunk) => { body += chunk; });
     request.on("end", () => {
       hits += 1;
+      forwarded.push(JSON.parse(body));
       response.setHeader("content-type", "application/json");
       if (hits === 1) {
         response.statusCode = 400;
@@ -523,10 +555,10 @@ test("供应商报上下文超限时，网关压缩后重试，用户看到的�
   await store.read();
   // 窗口取 150K：预检算出来约 125K，够不着 135K 的预算，所以不会提前压缩——
   // 只有供应商真的回了一句「超了」，才会走到「压缩后重试」这条路上。
-  await store.save({ id: "retry-ctx", name: "重试窗口", endpoint: upstreamURL, protocol: "chat", model: "retry-ctx", contextWindow: 150000, credentialID: "retry-ctx" }, 1, "k1");
+  await store.save({ id: "retry-ctx", name: "重试窗口", endpoint: upstreamURL, protocol: "chat", model: "retry-ctx", contextWindow: 150000, credentialID: "retry-ctx", runtimeProfile }, 1, "k1");
   const gateway = await listen(createGateway(store), context);
   const headers = { "content-type": "application/json", authorization: `Bearer ${await store.token("router")}` };
-  const history = [];
+  const history = [{role:"developer",content:[{type:"input_text",text:"PROJECT_REQUIREMENT_PRESERVE"}]}];
   for (let index = 0; index < 20; index += 1) {
     history.push({ role: "user", content: [{ type: "input_text", text: `第 ${index} 轮：请处理 ${"x".repeat(20000)}` }] });
     history.push({ role: "assistant", content: [{ type: "input_text", text: `第 ${index} 轮完成` }] });
@@ -538,7 +570,10 @@ test("供应商报上下文超限时，网关压缩后重试，用户看到的�
   assert.equal(response.status, 200, `应压缩后重试成功，实际 ${response.status}: ${text.slice(0, 200)}`);
   assert.match(text, /MODEL_ASSISTANT_OK/);
   assert.equal(hits, 3, "一次被拒 + 一次摘要 + 一次重试");
+  assert.ok(JSON.stringify(forwarded[2]).length < JSON.stringify(forwarded[0]).length * 0.75);
+  assert.match(JSON.stringify(forwarded[2]), /PROJECT_REQUIREMENT_PRESERVE/);
 });
+}
 
 
 // 供应商的报错里常常写着它真正能装多少。与其一直猜，不如记下来给下一条请求用。

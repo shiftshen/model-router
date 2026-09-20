@@ -10,7 +10,9 @@ import { errorMessage, gatewayBuild, gatewayURL, upstream, limitedJSON } from ".
 import { cleanupPlan, cleanupWindowOnLaunch, directorySize, diskUsage } from "./disk-cleanup.mjs";
 import { readDiskPolicy } from "./disk-policy.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
-import { buildRouterTable, modelInfo, routerCatalog, routerID, routerProviderID } from "./router.mjs";
+import { buildRouterTable, modelInfo, routerCatalog, routerID, routerProviderID, routerTableEntry } from "./router.mjs";
+import { resolveRuntimeProfile } from "./runtime-profile.mjs";
+export { resolveRuntimeProfile } from "./runtime-profile.mjs";
 import {
   allocateWindow,
   findWindow,
@@ -50,17 +52,34 @@ import {
 
 const sharedHome = path.join(os.homedir(), ".codex");
 const sharedRuntimeAssets = Object.freeze(["auth.json", "AGENTS.md", "skills", "plugins", "requirements.toml", "hooks.json"]);
+const liteBlockedRuntimeAssets = Object.freeze(["skills", "plugins", "requirements.toml", "hooks.json"]);
+const liteAgentsText = `# Model Router Lite\n- 简单问题直接回答，不扫描无关项目。\n- 代码任务只读必要文件，做最小修改并运行相关检查。\n- 默认只使用 Codex 核心文件/终端/编辑能力；不要主动依赖 Plugins、MCP、Skills 或子智能体。\n- 需要完整工具生态时，把该模型的“Codex 环境”改为 Full。\n`;
 const execFileAsync = promisify(execFile);
 
-function composeConfig(source, marker, { model, provider, catalogPath, name, baseURL }) {
+async function removeManagedAsset(target) {
+  try {
+    const stat = await fs.lstat(target);
+    if (stat.isSymbolicLink()) await fs.unlink(target);
+    else if (stat.isDirectory()) await fs.rename(target, `${target}.disabled-${randomUUID()}`);
+    else await fs.unlink(target);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
+
+function composeConfig(source, marker, { model, provider, catalogPath, name, baseURL, runtimeProfile = "full" }) {
   const clean = source.replace(new RegExp(`\\n?# BEGIN ${marker}[\\s\\S]*?# END ${marker}\\n?`, "g"), "\n");
   const lines = clean.split(/\r?\n/);
   const section = lines.findIndex((line) => /^\s*\[/.test(line));
-  const top = (section === -1 ? lines : lines.slice(0, section)).filter((line) => !/^\s*(model|model_provider|model_catalog_json|service_tier|profile)\s*=/.test(line));
+  const top = (section === -1 ? lines : lines.slice(0, section)).filter((line) => runtimeProfile === "lite"
+    ? /^\s*(approval_policy|sandbox_mode|model_reasoning_effort|model_verbosity)\s*=\s*("[^"\n]*"|'[^'\n]*')\s*(#.*)?$/.test(line)
+    : !/^\s*(model|model_provider|model_catalog_json|service_tier|profile)\s*=/.test(line));
   const routing = [`model = ${JSON.stringify(model)}`];
   if (provider) routing.push(`model_provider = "${provider}"`, `model_catalog_json = ${JSON.stringify(catalogPath)}`);
+  const inheritedSections = runtimeProfile === "lite" ? "" : (section === -1 ? "" : lines.slice(section).join("\n").trim());
+  const liteFeatures = runtimeProfile === "lite" ? `[features]\napps = false\nplugins = false\nmulti_agent = false\nplugin_sharing = false\nremote_plugin = false\nin_app_browser = false\nbrowser_use = false\nbrowser_use_external = false\nmemories = false\nchronicle = false\nskill_search = false` : "";
   const block = provider ? `# BEGIN ${marker}\n[model_providers.${provider}]\nname = ${JSON.stringify(name)}\nbase_url = ${JSON.stringify(baseURL)}\nenv_key = "CMA_ROUTE_TOKEN"\nwire_api = "responses"\nrequires_openai_auth = false\n# END ${marker}` : "";
-  return [top.join("\n").trim(), routing.join("\n"), section === -1 ? "" : lines.slice(section).join("\n").trim(), block].filter(Boolean).join("\n\n") + "\n";
+  return [top.join("\n").trim(), routing.join("\n"), liteFeatures, inheritedSections, block].filter(Boolean).join("\n\n") + "\n";
 }
 
 export function renderProductConfig(source, route, catalogPath) {
@@ -71,16 +90,18 @@ export function renderProductConfig(source, route, catalogPath) {
     catalogPath,
     name: route.name,
     baseURL: `${gatewayURL}/routes/${route.id}/v1`,
+    runtimeProfile: resolveRuntimeProfile(route),
   });
 }
 
-export function renderRouterConfig(source, { model, catalogPath }) {
+export function renderRouterConfig(source, { model, catalogPath, runtimeProfile = "full" }) {
   return composeConfig(source, "CODEX MODEL ASSISTANT SWITCH WINDOW", {
     model,
     provider: routerProviderID,
     catalogPath,
     name: "Model Router · 可切换窗口",
     baseURL: `${gatewayURL}/router/v1`,
+    runtimeProfile,
   });
 }
 
@@ -229,9 +250,23 @@ export class ProductService {
     this.officialHome = sharedHome;
     this.openOfficialDesktop = openOfficialChatGPTDesktop;
   }
-  async syncSharedRuntimeAssets(homePath) {
+  async syncSharedRuntimeAssets(homePath, runtimeProfile = "full") {
+    if (runtimeProfile === "lite") {
+      for (const name of liteBlockedRuntimeAssets) await removeManagedAsset(path.join(homePath, name));
+      await removeManagedAsset(path.join(homePath, "AGENTS.md"));
+      await fs.writeFile(path.join(homePath, "AGENTS.md"), liteAgentsText, { mode: 0o600 });
+      const auth = path.join(this.officialHome, "auth.json");
+      try { await fs.access(auth); await linkSharedAsset(auth, path.join(homePath, "auth.json")); }
+      catch (error) { if (!["ENOENT", "EEXIST"].includes(error.code)) throw error; }
+      return;
+    }
+    try {
+      const agentsPath = path.join(homePath, "AGENTS.md");
+      const current = await fs.readFile(agentsPath, "utf8");
+      if (current.startsWith("# Model Router Lite")) await removeManagedAsset(agentsPath);
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
     for (const name of sharedRuntimeAssets) {
-      const sourcePath = path.join(sharedHome, name);
+      const sourcePath = path.join(this.officialHome, name);
       try {
         await fs.access(sourcePath);
         await linkSharedAsset(sourcePath, path.join(homePath, name));
@@ -346,8 +381,67 @@ export class ProductService {
       } catch (error) { if (error.code !== "ENOENT") throw error; }
     }
   }
+  async ensureManagedLocalService(route) {
+    if (isWindows || route?.id !== "bonsai2-27b") return { managed: false };
+    const endpoint = String(route.endpoint ?? "");
+    let url;
+    try { url = new URL(endpoint); } catch { return { managed: false }; }
+    if (url.hostname !== "127.0.0.1" || url.port !== "18081") return { managed: false };
+    const memoryCap = os.totalmem() <= 72 * 1024 * 1024 * 1024 ? 65536 : 131072;
+    const configuredWindow = Number(route.contextWindow) > 0 ? Number(route.contextWindow) : memoryCap;
+    const contextWindow = Math.min(configuredWindow, memoryCap);
+    if (Number(route.contextWindow) !== contextWindow) {
+      try {
+        const data = await this.store.read();
+        const current = data.routes.find((entry) => entry.id === route.id);
+        if (current) await this.store.save({ ...current, contextWindow }, data.revision);
+      } catch { }
+    }
+    const health = `${url.protocol}//${url.host}/health`;
+    try {
+      const response = await fetch(health, { signal: AbortSignal.timeout(1200) });
+      if (response.ok) return { managed: true, started: false, health, contextWindow };
+    } catch { }
+
+    const base = path.join(os.homedir(), "Library", "Application Support", "Model Router", "Bonsai-demo");
+    const binary = path.join(base, "bin", "mac", "llama-server");
+    const model = path.join(base, "models", "bonsai2-gguf", "27B", "Ternary-Bonsai-2-27B-PQ2_0.gguf");
+    const mmproj = path.join(base, "models", "bonsai2-gguf", "27B", "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf");
+    for (const required of [binary, model, mmproj]) {
+      try { await fs.access(required); }
+      catch { throw new Error(`Bonsai 托管运行时不完整：缺少 ${required}`); }
+    }
+    const child = spawn(binary, [
+      "-m", model,
+      "--alias", route.model,
+      "--host", "127.0.0.1",
+      "--port", "18081",
+      "-ngl", "99",
+      "-fa", "on",
+      "-c", String(contextWindow),
+      "--temp", "1.0",
+      "--top-p", "0.95",
+      "--top-k", "20",
+      "--jinja",
+      "--mmproj", mmproj,
+      "--cache-type-k", "q4_0",
+      "--cache-type-v", "q4_0",
+    ], { detached: true, stdio: "ignore" });
+    await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    child.unref();
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      try {
+        const response = await fetch(health, { signal: AbortSignal.timeout(900) });
+        if (response.ok) return { managed: true, started: true, pid: child.pid, health, contextWindow };
+      } catch { }
+    }
+    throw new Error("Bonsai 27B 已启动但 15 秒内没有通过健康检查；请查看本机内存占用或模型运行日志");
+  }
+
   async discover(route) {
     const checked = validateRoute(route);
+    await this.ensureManagedLocalService(checked);
     if (checked.protocol === "oauth") return { models: [], message: "官方模型由 ChatGPT Desktop 自己管理，请在原版客户端内选择" };
     const result = await upstream(checked, await this.store.secret(checked.credentialID), "models", null, 15000);
     const data = await limitedJSON(result.body);
@@ -370,6 +464,7 @@ export class ProductService {
   // 不知道供应商实现的是哪套接口时，逐个真跑一次最小请求，把能用的那套记下来。
   async detectProtocol(id, { save = true } = {}) {
     const route = await this.store.route(id);
+    await this.ensureManagedLocalService(route);
     if (route.archived) throw new Error("此模型已归档，请先恢复");
     if (route.protocol === "oauth") return { protocol: "oauth", message: "ChatGPT Desktop 官方入口不需要识别接口", tested: [] };
     if (!route.model) throw new Error("请先选择模型 ID");
@@ -455,6 +550,7 @@ export class ProductService {
   }
   async probe(id) {
     const route = await this.store.route(id);
+    await this.ensureManagedLocalService(route);
     if (route.archived) throw new Error("请选择已启用且配置完整的模型");
     if (route.protocol === "oauth") return this.check(id);
     if (!route.model) throw new Error("请选择已启用且配置完整的模型");
@@ -522,14 +618,17 @@ export class ProductService {
     if (continueExisting && !freshImport) await snapshotConversations(this.officialHome, continuationHome, route);
     const catalogPath = path.join(homePath, "model-catalog.json");
     let source = "";
-    try { source = await fs.readFile(path.join(sharedHome, "config.toml"), "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    try { source = await fs.readFile(path.join(this.officialHome, "config.toml"), "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
     const switching = route.switchable && route.protocol !== "oauth";
+    let runtimeProfile = resolveRuntimeProfile(route);
     let config;
     if (switching) {
       const table = buildRouterTable((await this.store.read()).routes);
       await atomicJSON(catalogPath, routerCatalog(table));
-      const slug = table.find((entry) => entry.route.id === id)?.slug || route.model;
-      config = renderRouterConfig(source, { model: slug, catalogPath });
+      const remembered = await readWindowCurrentModel(homePath);
+      const chosen = routerTableEntry(table, remembered) || this.routerSelection(table, id, id);
+      runtimeProfile = resolveRuntimeProfile(chosen.route);
+      config = renderRouterConfig(source, { model: chosen.slug, catalogPath, runtimeProfile });
     } else {
       await atomicJSON(catalogPath, catalog(route));
       config = renderProductConfig(source, route, catalogPath);
@@ -537,9 +636,9 @@ export class ProductService {
     const temporary = path.join(homePath, `.config-${randomUUID()}.toml`);
     await fs.writeFile(temporary, config, { mode: 0o600 });
     await fs.rename(temporary, path.join(homePath, "config.toml"));
-    await this.syncSharedRuntimeAssets(homePath);
+    await this.syncSharedRuntimeAssets(homePath, runtimeProfile);
     await fs.mkdir(path.join(homePath, "memories"), { recursive: true, mode: 0o700 });
-    return { route, homePath, userDataPath, diskCleanup };
+    return { route, homePath, userDataPath, diskCleanup, runtimeProfile };
   }
   // 一个条目可能只有普通实例目录，也可能已经有一份"导入原会话"的副本目录。
   async instancePaths(id) {
@@ -561,21 +660,26 @@ export class ProductService {
     const homes = ["instances-v2", "continuations-v1"].map((root) => path.join(this.store.root, root, id, "codex-home"));
     const table = buildRouterTable((await this.store.read()).routes);
     let source = "";
-    try { source = await fs.readFile(path.join(sharedHome, "config.toml"), "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    try { source = await fs.readFile(path.join(this.officialHome, "config.toml"), "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
     let touched = false;
     for (const homePath of homes) {
       try { await fs.access(path.join(homePath, "config.toml")); }
       catch (error) { if (error.code === "ENOENT") continue; throw error; }
       touched = true;
+      if ((await this.runningWindows()).has(id)) continue;
       const catalogPath = path.join(homePath, "model-catalog.json");
       const current = await this.store.route(id);
+      const remembered = await readWindowCurrentModel(homePath);
+      const chosen = enabled ? (routerTableEntry(table, remembered) || this.routerSelection(table, id, id)) : null;
+      const runtimeProfile = resolveRuntimeProfile(chosen?.route || current);
       const updated = enabled
-        ? renderRouterConfig(source, { model: table.find((entry) => entry.route.id === id)?.slug || route.model, catalogPath })
+        ? renderRouterConfig(source, { model: chosen.slug, catalogPath, runtimeProfile })
         : renderProductConfig(source, current, catalogPath);
       await atomicJSON(catalogPath, enabled ? routerCatalog(table) : catalog(current));
       const temporary = path.join(homePath, `.config-${randomUUID()}.toml`);
       await fs.writeFile(temporary, updated, { mode: 0o600 });
       await fs.rename(temporary, path.join(homePath, "config.toml"));
+      await this.syncSharedRuntimeAssets(homePath, runtimeProfile);
     }
     return {
       ...(await this.switchSummary()),
@@ -756,10 +860,12 @@ export class ProductService {
     const repaired = await this.syncContextWindows();
     const data = await this.store.read();
     const table = buildRouterTable(data.routes);
-    const targets = [{ id: legacyWindowID, home: windowPaths(this.store.root, legacyWindowID).homePath }];
-    for (const entry of (await readWindowRegistry(this.store.root)).windows) {
+    const registry = await readWindowRegistry(this.store.root);
+    const legacyEntry = registry.windows.find((entry) => entry.id === legacyWindowID);
+    const targets = [{ id: legacyWindowID, home: windowPaths(this.store.root, legacyWindowID).homePath, initialModel: legacyEntry?.initialModel || "" }];
+    for (const entry of registry.windows) {
       if (entry.id === legacyWindowID) continue;
-      targets.push({ id: entry.id, home: windowPaths(this.store.root, entry.id).homePath });
+      targets.push({ id: entry.id, home: windowPaths(this.store.root, entry.id).homePath, initialModel: entry.initialModel || "" });
     }
     const running = new Set([...(await this.runningWindows()).keys()]);
     const updated = [];
@@ -767,9 +873,22 @@ export class ProductService {
     for (const target of targets) {
       try { await fs.access(path.join(target.home, "state_5.sqlite")); }
       catch (error) { if (error.code === "ENOENT") { skipped.push({ id: target.id, reason: "还没有任务库" }); continue; } throw error; }
-      await atomicJSON(path.join(target.home, "model-catalog.json"), routerCatalog(table));
-      await this.syncSharedRuntimeAssets(target.home);
-      updated.push({ id: target.id, running: running.has(target.id), models: table.length });
+      const catalogPath = path.join(target.home, "model-catalog.json");
+      await atomicJSON(catalogPath, routerCatalog(table));
+      if (running.has(target.id)) {
+        skipped.push({ id: target.id, reason: "窗口正在运行，环境变更将在重开后生效" });
+        continue;
+      }
+      const currentModel = await readWindowCurrentModel(target.home);
+      const chosen = routerTableEntry(table, currentModel) || this.routerSelection(table, target.initialModel, target.initialModel);
+      const runtimeProfile = resolveRuntimeProfile(chosen.route);
+      let source = "";
+      try { source = await fs.readFile(path.join(this.officialHome, "config.toml"), "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      const temporary = path.join(target.home, `.config-${randomUUID()}.toml`);
+      await fs.writeFile(temporary, renderRouterConfig(source, { model: chosen.slug, catalogPath, runtimeProfile }), { mode: 0o600 });
+      await fs.rename(temporary, path.join(target.home, "config.toml"));
+      await this.syncSharedRuntimeAssets(target.home, runtimeProfile);
+      updated.push({ id: target.id, running: running.has(target.id), models: table.length, runtimeProfile });
     }
     const repairNote = repaired.length
       ? `；顺手把 ${repaired.length} 个模型的上下文长度改成按模型匹配的值（${repaired.map((entry) => `${entry.id} ${entry.from}→${entry.to}`).join("、")}）`
@@ -789,7 +908,9 @@ export class ProductService {
     const registry = await readWindowRegistry(this.store.root);
     const entry = findWindow(registry, id);
     if (!entry && id !== legacyWindowID) throw new Error("窗口不存在，请先新建窗口");
-    const chosen = this.routerSelection(table, initial, entry?.initialModel);
+    const remembered = await readWindowCurrentModel(windowPaths(this.store.root, id).homePath);
+    const chosen = this.routerSelection(table, initial, remembered || entry?.initialModel);
+    const runtimeProfile = resolveRuntimeProfile(chosen.route);
     await this.startGateway();
     const paths = windowPaths(this.store.root, id);
     await fs.mkdir(paths.homePath, { recursive: true, mode: 0o700 });
@@ -820,15 +941,15 @@ export class ProductService {
     }
     await atomicJSON(paths.catalogPath, routerCatalog(table));
     let source = "";
-    try { source = await fs.readFile(path.join(sharedHome, "config.toml"), "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    try { source = await fs.readFile(path.join(this.officialHome, "config.toml"), "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
     const temporary = path.join(paths.homePath, `.config-${randomUUID()}.toml`);
-    await fs.writeFile(temporary, renderRouterConfig(source, { model: chosen.slug, catalogPath: paths.catalogPath }), { mode: 0o600 });
+    await fs.writeFile(temporary, renderRouterConfig(source, { model: chosen.slug, catalogPath: paths.catalogPath, runtimeProfile }), { mode: 0o600 });
     await fs.rename(temporary, path.join(paths.homePath, "config.toml"));
-    await this.syncSharedRuntimeAssets(paths.homePath);
+    await this.syncSharedRuntimeAssets(paths.homePath, runtimeProfile);
     await fs.mkdir(path.join(paths.homePath, "memories"), { recursive: true, mode: 0o700 });
     let imported = null;
     if (importHistory) imported = await this.syncSwitchWindowHistory(paths.homePath, chosen.slug);
-    return { ...paths, table, chosen, globalState, imported, model, diskCleanup };
+    return { ...paths, table, chosen, globalState, imported, model, diskCleanup, runtimeProfile };
   }
   async spawnWindow(prepared) {
     await requireCodexApp();

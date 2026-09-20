@@ -17,6 +17,7 @@ struct ManagedModel: Codable, Identifiable, Hashable {
     var switchable: Bool?
     var fallback: String?
     var hidden: Bool?
+    var runtimeProfile: String?
     var contextWindow: Int
     var hasKey: Bool?
     var verifiedAt: String?
@@ -25,7 +26,7 @@ struct ManagedModel: Codable, Identifiable, Hashable {
     var icon: String { `protocol` == "oauth" ? "sparkles" : (noKey ? "desktopcomputer" : "network") }
     var color: Color { `protocol` == "oauth" ? .blue : (noKey ? .green : .indigo) }
     static func new() -> ManagedModel {
-        ManagedModel(id: "model-" + UUID().uuidString.lowercased(), name: "", vendor: "自定义", endpoint: "https://api.deepseek.com/v1", protocol: "responses", model: "", notes: "", docs: "", credentialID: "", noKey: false, archived: false, contextWindow: 0)
+        ManagedModel(id: "model-" + UUID().uuidString.lowercased(), name: "", vendor: "自定义", endpoint: "https://api.deepseek.com/v1", protocol: "responses", model: "", notes: "", docs: "", credentialID: "", noKey: false, archived: false, runtimeProfile: "auto", contextWindow: 0)
     }
 }
 

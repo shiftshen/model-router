@@ -26,6 +26,7 @@ import {
   trimOldToolOutputs,
 } from "./context-compaction.mjs";
 import { contextWindowFromMessage, resolveContextWindow } from "./model-windows.mjs";
+import { payloadForRoute, payloadSize } from "./runtime-profile.mjs";
 export { estimateTokens };
 
 export const gatewayPort = 18793;
@@ -211,7 +212,7 @@ export async function compactForWindow({ store, route, payload, limit, signal, k
   if (!summary) summary = fallbackSummary(head);
   const dropped = head.length;
   return {
-    input: buildCompactedInput({ summary, tail, droppedCount: dropped }),
+    input: [...head.filter((item) => ["system", "developer"].includes(item?.role)), ...buildCompactedInput({ summary, tail, droppedCount: dropped })],
     note: `较早的 ${dropped} 条记录已压缩为摘要（保留最近 ${tail.length} 条，摘要由 ${summarizer.name || summarizer.id} 生成）`,
   };
 }
@@ -500,6 +501,10 @@ export function createGateway(store = new ModelStore(), options = {}) {
       } else if (!route.model || payload.model !== route.model) {
         return sendJSON(response, 400, { error: { message: "模型与实例不匹配，请在助手中创建对应实例" } });
       }
+      const budgetPayload = payloadForRoute(payload, route);
+      if (budgetPayload !== payload) {
+        process.stdout.write(`[lite] ${route.id}: tools ${Array.isArray(payload.tools) ? payload.tools.length : 0}→${Array.isArray(budgetPayload.tools) ? budgetPayload.tools.length : 0}, request ${(payloadSize(payload) / 1024).toFixed(1)}→${(payloadSize(budgetPayload) / 1024).toFixed(1)} KB\n`);
+      }
       // 会话比这个模型的窗口装得下时，静默压缩掉最早的部分再继续，绝不把请求挡回去。
       // 为什么必须由网关做：Codex 对目录里的自定义模型不会自己压缩——实测把
       // context_window=40000、auto_compact_token_limit=38000 喂给它（并打开 context_management /
@@ -507,7 +512,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
       // context_length_exceeded 时它也只把这一轮标记为失败，不会自己压缩重试。
       // 用户要的是「接着说」，所以压缩这件事得有人替它做，而且不能留下痕迹。
       const budget = contextBudget(route);
-      let estimate = estimateTokens(payload, payloadBytes);
+      let estimate = estimateTokens(budgetPayload, budgetPayload === payload ? payloadBytes : payloadSize(budgetPayload));
       if (budget > 0 && estimate > budget) {
         // 压缩要花时间（摘要模型可能跑十几秒）。先把响应头和一行注释写出去，
         // 让 Codex 知道连接还活着——否则它会以为卡死，弹「正在重新连接」，甚至直接超时断开。
@@ -524,7 +529,8 @@ export function createGateway(store = new ModelStore(), options = {}) {
           payload.input = compacted.input;
           payloadBytesNote = compacted.note;
           compactionAttempted = true;
-          estimate = estimateTokens(payload, payloadBytes);
+          const projected = payloadForRoute(payload, route);
+          estimate = estimateTokens(projected, payloadSize(projected));
           process.stdout.write(`[compact] ${route.id}: ${compacted.note}\n`);
         }
         if (estimate > budget) {
@@ -569,16 +575,17 @@ export function createGateway(store = new ModelStore(), options = {}) {
         const attempts = protocolChain(target.protocol);
         for (let index = 0; index < attempts.length; index += 1) {
           const attempt = attempts[index];
+          const targetPayload = payloadForRoute(payload, target);
           try {
             if (attempt === "chatgpt") {
-              const result = await officialUpstream({ ...target, protocol: attempt }, { ...payload, model: target.model }, callSignal);
+              const result = await officialUpstream({ ...target, protocol: attempt }, { ...targetPayload, model: target.model }, callSignal);
               if (!response.headersSent) response.writeHead(200, { "content-type": result.headers.get("content-type") || "application/json", "cache-control": "no-store" });
               sseStream = true;
               armIdle();
               await pipeline(Readable.fromWeb(result.body), response);
               disarmIdle();
             } else if (attempt === "responses") {
-              const result = await upstream({ ...target, protocol: attempt }, targetKey, "responses", nativePayload({ ...payload, model: target.model }, target.model), 3600000, callSignal, payload.session_id);
+              const result = await upstream({ ...target, protocol: attempt }, targetKey, "responses", nativePayload({ ...targetPayload, model: target.model }, target.model), 3600000, callSignal, payload.session_id);
               if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
               // 这里必须直接转发，不能因为「已经发过响应头」就把整段缓冲下来：
               // 提前发出去的只是「正在压缩」的注释，正文仍然要一个 token 一个 token 地流。
@@ -594,7 +601,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
                 response.write(": waiting\n\n");
                 heartbeat = setInterval(() => response.write(": waiting\n\n"), 5000);
               }
-              const { body, definitions } = toChat({ ...payload, model: target.model }, { stream: Boolean(payload.stream) });
+              const { body, definitions } = toChat({ ...targetPayload, model: target.model }, { stream: Boolean(payload.stream) });
               const path = attempt === "anthropic" ? "messages" : "chat/completions";
               const result = await upstream({ ...target, protocol: attempt }, targetKey, path, attempt === "anthropic" ? toAnthropic(body, { stream: Boolean(payload.stream) }) : body, 3600000, callSignal, payload.session_id);
               if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
