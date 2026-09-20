@@ -31,5 +31,11 @@ jobs:
           APP="build/Model Router.app"
           lipo -archs "$APP/Contents/MacOS/CodexModelAssistant" | grep -q arm64
           lipo -archs "$APP/Contents/MacOS/CodexModelAssistant" | grep -q x86_64
+          lipo "$APP/Contents/Resources/node" -verify_arch arm64 x86_64
+          test -L "$APP/Contents/Resources/node-arm64"
+          test -L "$APP/Contents/Resources/node-x64"
+          test "$APP/Contents/Resources/node-arm64" -ef "$APP/Contents/Resources/node"
+          test "$APP/Contents/Resources/node-x64" -ef "$APP/Contents/Resources/node"
+          "$APP/Contents/Resources/node" -e 'if (process.arch !== (process.env.RUNNER_ARCH === "ARM64" ? "arm64" : "x64")) process.exit(1)'
           /usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' "$APP/Contents/Info.plist" | grep -qx '12.0'
           codesign --verify --deep --strict "$APP"

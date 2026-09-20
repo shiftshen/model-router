@@ -38,34 +38,39 @@ for ARCH in arm64 x86_64; do
     echo "跳过 $ARCH：$(tail -2 "$BUILD/slices/$ARCH.log" | tr '\n' ' ')" >&2
   fi
 done
-[[ ${#SLICES[@]} -gt 0 ]] || { echo "两个架构都没编译成功，检查 $BUILD/slices/*.log" >&2; exit 1; }
+[[ ${#SLICES[@]} -eq 2 ]] || { echo "Universal 构建必须两个架构都成功，检查 $BUILD/slices/*.log" >&2; exit 1; }
 lipo -create -output "$APP/Contents/MacOS/CodexModelAssistant" "${SLICES[@]}"
+lipo "$APP/Contents/MacOS/CodexModelAssistant" -verify_arch arm64 x86_64
 echo "主程序架构：$(lipo -archs "$APP/Contents/MacOS/CodexModelAssistant")"
 
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
 rsync -a --delete "$ROOT"/src/ "$APP/Contents/Resources/runtime/"
 
-# 两个架构的 node 都带上，运行时按架构选（见 ModelLibrary 的 bundledNode）。
+# 单个 Universal Node：包内不再留 Intel-only helper，避免 Apple Silicon 的兼容性提示。
+NODE_SLICES=()
 for ARCH in arm64 x64; do
   NODE_ROOT="$ROOT/.runtime-cache/node-v$NODE_VERSION-darwin-$ARCH"
   if [[ -x "$NODE_ROOT/bin/node" ]]; then
-    cp "$NODE_ROOT/bin/node" "$APP/Contents/Resources/node-$ARCH"
+    NODE_SLICES+=("$NODE_ROOT/bin/node")
     cp "$NODE_ROOT/LICENSE" "$APP/Contents/Resources/Node-LICENSE"
   else
     echo "缺少 $ARCH 的 node 运行时（先跑 scripts/fetch-runtime.sh）" >&2
+    exit 1
   fi
 done
-# 旧路径兼容：以前所有地方都写死 Contents/Resources/node，留一份构建机架构的。
-HOST_ARCH="$(uname -m)"; [[ "$HOST_ARCH" == "x86_64" ]] && HOST_ARCH="x64"
-if [[ -f "$APP/Contents/Resources/node-$HOST_ARCH" ]]; then
-  cp "$APP/Contents/Resources/node-$HOST_ARCH" "$APP/Contents/Resources/node"
-fi
+lipo -create "${NODE_SLICES[@]}" -output "$APP/Contents/Resources/node"
+lipo "$APP/Contents/Resources/node" -verify_arch arm64 x86_64
+# 保留既有 LaunchAgent / Swift 调用路径，两个别名都由系统选择原生架构。
+for ARCH in arm64 x64; do
+  rm -f "$APP/Contents/Resources/node-$ARCH"
+  ln -s node "$APP/Contents/Resources/node-$ARCH"
+done
 
 cp "$ROOT/Resources/ModelRouter.icns" "$APP/Contents/Resources/ModelRouter.icns"
 chmod 755 "$APP/Contents/MacOS/CodexModelAssistant"
 
 IDENTITY="${CODE_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)}"
-NODE_BINS=("$APP/Contents/Resources/node" "$APP/Contents/Resources/node-arm64" "$APP/Contents/Resources/node-x64")
+NODE_BINS=("$APP/Contents/Resources/node")
 if [[ -n "$IDENTITY" ]]; then
   # node 是独立可执行文件，必须单独签（带自己的 entitlements），否则主程序签了它也起不来。
   for NODE_BIN in "${NODE_BINS[@]}"; do

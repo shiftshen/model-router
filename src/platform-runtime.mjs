@@ -221,14 +221,23 @@ export async function findCodexDesktopExecutable() {
   throw new Error("没有找到 Windows 版 ChatGPT/Codex。请先从 Microsoft Store 安装官方 ChatGPT 桌面应用；也可以用 CMA_CODEX_DESKTOP 指定可执行文件路径。");
 }
 
+export function desktopEnvironment(env = process.env) {
+  const result = { ...env };
+  // The Windows Electron host uses this flag for its Node service, never for a GUI child.
+  for (const key of Object.keys(result)) {
+    if (key.toUpperCase() === "ELECTRON_RUN_AS_NODE") delete result[key];
+  }
+  return result;
+}
+
 export async function openOfficialChatGPTDesktop() {
   if (!isWindows) {
     const app = await findMacChatGPTAppBundle();
-    await execFileAsync("/usr/bin/open", [app.appPath], { maxBuffer: 1024 * 1024 });
+    await execFileAsync("/usr/bin/open", [app.appPath], { maxBuffer: 1024 * 1024, env: desktopEnvironment() });
     return { launched: true, appPath: app.appPath, executable: app.executable, pid: 0 };
   }
   const executable = await findCodexDesktopExecutable();
-  const child = spawn(executable, [], { env: process.env, stdio: "ignore", detached: true, windowsHide: false });
+  const child = spawn(executable, [], { env: desktopEnvironment(), stdio: "ignore", detached: true, windowsHide: false });
   await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
   child.unref();
   return { launched: true, executable, pid: child.pid };
@@ -237,7 +246,7 @@ export async function openOfficialChatGPTDesktop() {
 export async function spawnCodexDesktop(args = [], env = process.env) {
   const executable = await findCodexDesktopExecutable();
   const child = spawn(executable, args, {
-    env,
+    env: desktopEnvironment(env),
     stdio: "ignore",
     detached: true,
     windowsHide: false,

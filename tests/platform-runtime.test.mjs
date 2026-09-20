@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { linkSharedAsset, normalizeProcessText, parseWindowsAppxCandidates, rankMacChatGPTAppCandidates, windowsProcessRows } from "../src/platform-runtime.mjs";
+import { desktopEnvironment, linkSharedAsset, normalizeProcessText, parseWindowsAppxCandidates, rankMacChatGPTAppCandidates, windowsProcessRows } from "../src/platform-runtime.mjs";
+
+test("Desktop children do not inherit Electron service mode, while route isolation remains intact", () => {
+  const original = {ELECTRON_RUN_AS_NODE:"1",electron_run_as_node:"1",CODEX_HOME:"isolated",CMA_ROUTE_TOKEN:"fixture",PATH:"original"};
+  assert.deepEqual(desktopEnvironment(original), {CODEX_HOME:"isolated",CMA_ROUTE_TOKEN:"fixture",PATH:"original"});
+  assert.equal(original.ELECTRON_RUN_AS_NODE, "1");
+});
 
 test("Windows 进程 JSON 会规范成可供现有窗口解析器使用的正斜杠命令行", () => {
   const rows = windowsProcessRows(JSON.stringify([

@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.2.1
+
+- Package a single Universal Node runtime with compatibility aliases, removing the Intel-only helper from the macOS bundle. Require both architectures for the app and runtime in builds and CI.
+- Declare and close reasoning stream items correctly, preserve output indices across reasoning/text/tool calls, and emit tool item lifecycle events.
+- Decode custom-tool inputs consistently for raw text, JSON strings and input wrappers in streaming and buffered responses.
+- Remove inherited ELECTRON_RUN_AS_NODE when launching desktop GUI processes from the Windows Electron service.
+- Reopening a window with a removed recent model now uses that window's starting model instead of an unrelated catalog entry.
+- Health checks no longer lower the configured context window of an already running, externally managed Bonsai service.
+
 ## 3.2.0
 
 ### Codex runtime profiles

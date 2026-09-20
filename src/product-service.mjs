@@ -390,6 +390,11 @@ export class ProductService {
     const memoryCap = os.totalmem() <= 72 * 1024 * 1024 * 1024 ? 65536 : 131072;
     const configuredWindow = Number(route.contextWindow) > 0 ? Number(route.contextWindow) : memoryCap;
     const contextWindow = Math.min(configuredWindow, memoryCap);
+    const health = `${url.protocol}//${url.host}/health`;
+    try {
+      const response = await fetch(health, { signal: AbortSignal.timeout(1200) });
+      if (response.ok) return { managed: true, started: false, health, contextWindow: configuredWindow };
+    } catch { }
     if (Number(route.contextWindow) !== contextWindow) {
       try {
         const data = await this.store.read();
@@ -397,12 +402,6 @@ export class ProductService {
         if (current) await this.store.save({ ...current, contextWindow }, data.revision);
       } catch { }
     }
-    const health = `${url.protocol}//${url.host}/health`;
-    try {
-      const response = await fetch(health, { signal: AbortSignal.timeout(1200) });
-      if (response.ok) return { managed: true, started: false, health, contextWindow };
-    } catch { }
-
     const base = path.join(os.homedir(), "Library", "Application Support", "Model Router", "Bonsai-demo");
     const binary = path.join(base, "bin", "mac", "llama-server");
     const model = path.join(base, "models", "bonsai2-gguf", "27B", "Ternary-Bonsai-2-27B-PQ2_0.gguf");
@@ -909,7 +908,9 @@ export class ProductService {
     const entry = findWindow(registry, id);
     if (!entry && id !== legacyWindowID) throw new Error("窗口不存在，请先新建窗口");
     const remembered = await readWindowCurrentModel(windowPaths(this.store.root, id).homePath);
-    const chosen = this.routerSelection(table, initial, remembered || entry?.initialModel);
+    const chosen = initial
+      ? this.routerSelection(table, initial, entry?.initialModel)
+      : routerTableEntry(table, remembered) || this.routerSelection(table, "", entry?.initialModel);
     const runtimeProfile = resolveRuntimeProfile(chosen.route);
     await this.startGateway();
     const paths = windowPaths(this.store.root, id);

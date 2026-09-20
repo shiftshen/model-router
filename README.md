@@ -14,8 +14,8 @@
 
 | | |
 |---|---|
-| 版本 | **3.2.0** |
-| 安装包 | `release/Model-Router-3.2.0-universal.dmg`（通用二进制：Apple Silicon + Intel） |
+| 版本 | **3.2.1** |
+| 安装包 | `release/Model-Router-3.2.1-universal.dmg`（通用二进制：Apple Silicon + Intel） |
 | 系统要求 | macOS 12.0 起 |
 | SHA-256 | 见 `release/SHA256SUMS.txt` |
 | 签名 | Developer ID Application（Chinda Lorcharoen）；正式 Release 执行 Apple notarization + staple，并用 `spctl` / `stapler` 验证 |

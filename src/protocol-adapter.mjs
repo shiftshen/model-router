@@ -98,6 +98,15 @@ export function toAnthropic(chat, { stream = false } = {}) {
   return body;
 }
 
+function customToolInput(argumentsText) {
+  try {
+    const parsed = JSON.parse(argumentsText);
+    if (typeof parsed === "string") return parsed;
+    if (typeof parsed?.input === "string") return parsed.input;
+  } catch { }
+  return argumentsText;
+}
+
 export function fromCompletion(result, definitions, protocol, model) {
   let text, calls, usage;
   if (protocol === "anthropic") {
@@ -117,7 +126,7 @@ export function fromCompletion(result, definitions, protocol, model) {
     const definition = definitions.find((entry) => entry.name === call.function.name);
     const item = { id: `fc_${randomUUID()}`, type: definition?.custom ? "custom_tool_call" : "function_call", call_id: call.id, name: definition?.original || call.function.name, status: "completed" };
     if (definition?.namespace) item.namespace = definition.namespace;
-    if (definition?.custom) item.input = JSON.parse(call.function.arguments).input;
+    if (definition?.custom) item.input = customToolInput(call.function.arguments);
     else item.arguments = call.function.arguments;
     output.push(item);
   }
@@ -160,6 +169,8 @@ export function createResponseStream({ model, send }) {
   const message = { id: `msg_${randomUUID()}`, type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "", annotations: [] }] };
   const calls = new Map();
   const order = [];
+  const completed = new Set();
+  let reasoning = null;
   let sequence = 1;
   let started = false;
   let textBuffer = "";
@@ -169,9 +180,22 @@ export function createResponseStream({ model, send }) {
   function startMessage() {
     if (started) return;
     started = true;
-    emit("response.output_item.added", { output_index: 0, item: { ...message, content: [] } });
-    emit("response.content_part.added", { item_id: message.id, output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
     order.push(message);
+    const output_index = order.indexOf(message);
+    emit("response.output_item.added", { output_index, item: { ...message, status: "in_progress", content: [] } });
+    emit("response.content_part.added", { item_id: message.id, output_index, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
+  }
+
+  function closeReasoning() {
+    if (!reasoning) return;
+    const output_index = order.indexOf(reasoning);
+    const part = reasoning.content[0];
+    emit("response.reasoning_text.done", {item_id:reasoning.id, output_index, content_index:0, text:part.text});
+    emit("response.content_part.done", {item_id:reasoning.id, output_index, content_index:0, part});
+    reasoning.status = "completed";
+    emit("response.output_item.done", {output_index, item:reasoning});
+    completed.add(reasoning.id);
+    reasoning = null;
   }
 
   function callAt(index) {
@@ -189,8 +213,7 @@ export function createResponseStream({ model, send }) {
     if (definition?.namespace) item.namespace = definition.namespace;
     if (definition?.custom) {
       item.type = "custom_tool_call";
-      try { item.input = JSON.parse(call.arguments).input ?? call.arguments; }
-      catch { item.input = call.arguments; }
+      item.input = customToolInput(call.arguments);
     } else {
       item.type = "function_call";
       item.arguments = call.arguments || "{}";
@@ -202,15 +225,25 @@ export function createResponseStream({ model, send }) {
     created() { emit("response.created", { response: { ...base, status: "in_progress", output: [] } }); },
     textDelta(chunk) {
       if (!chunk) return;
+      closeReasoning();
       startMessage();
       textBuffer += chunk;
-      emit("response.output_text.delta", { item_id: message.id, output_index: 0, content_index: 0, delta: chunk });
+      emit("response.output_text.delta", { item_id: message.id, output_index: order.indexOf(message), content_index: 0, delta: chunk });
     },
     reasoningDelta(chunk) {
       if (!chunk) return;
-      emit("response.reasoning_text.delta", { item_id: `rs_${responseID}`, output_index: 0, content_index: 0, delta: chunk });
+      if (!reasoning) {
+        reasoning = {id:`rs_${randomUUID()}`,type:"reasoning",status:"in_progress",summary:[],content:[{type:"reasoning_text",text:""}]};
+        order.push(reasoning);
+        const output_index = order.indexOf(reasoning);
+        emit("response.output_item.added", {output_index, item:{...reasoning,content:[]}});
+        emit("response.content_part.added", {item_id:reasoning.id,output_index,content_index:0,part:{type:"reasoning_text",text:""}});
+      }
+      reasoning.content[0].text += chunk;
+      emit("response.reasoning_text.delta", { item_id: reasoning.id, output_index: order.indexOf(reasoning), content_index: 0, delta: chunk });
     },
     toolDelta(index, { id, name, arguments: args }) {
+      closeReasoning();
       const call = callAt(index);
       if (id) call.call_id = id;
       if (name) call.name += name;
@@ -218,12 +251,21 @@ export function createResponseStream({ model, send }) {
     },
     setUsage(next) { usage = { ...usage, ...(next || {}) }; },
     finish({ definitions = [] } = {}) {
+      closeReasoning();
       const output = [];
       for (const entry of order) {
-        const item = entry === message ? { ...message, content: [{ ...message.content[0], text: textBuffer }] } : mapCall(entry, definitions);
+        const item = entry === message ? { ...message, content: [{ ...message.content[0], text: textBuffer }] } : entry.type === "reasoning" ? entry : mapCall(entry, definitions);
         if (item.type === "message" && !item.content[0].text) continue;
         output.push(item);
-        emit("response.output_item.done", { output_index: output.length - 1, item });
+        const output_index = output.length - 1;
+        if (completed.has(item.id)) continue;
+        if (item.type === "message") {
+          emit("response.output_text.done", {item_id:item.id,output_index,content_index:0,text:textBuffer});
+          emit("response.content_part.done", {item_id:item.id,output_index,content_index:0,part:item.content[0]});
+        } else {
+          emit("response.output_item.added", {output_index,item:{...item,status:"in_progress",...(item.type === "custom_tool_call" ? {input:""} : {arguments:""})}});
+        }
+        emit("response.output_item.done", { output_index, item });
       }
       const response = {
         ...base,

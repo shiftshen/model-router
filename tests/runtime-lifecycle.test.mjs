@@ -31,6 +31,8 @@ test("profiles follow remembered models across windows and continuations; runnin
   assert.equal(prepared.runtimeProfile, "lite");
   assert.ok((await fs.stat(path.join(home,"config.toml"))).size < 2048);
   const remember = async (dir, model) => fs.writeFile(path.join(dir, ".codex-global-state.json"), JSON.stringify({"electron-persisted-atom-state":{"composer-recent-model-configurations-v1":[{model}]}}));
+  await remember(home, "removed-model");
+  assert.equal((await service.prepareWindow("w2")).chosen.route.id, "local", "removed recent model falls back to this window's starting model");
   await remember(home, "cloud");
   assert.equal((await service.prepareWindow("w2")).runtimeProfile, "full");
   assert.match(await fs.readFile(path.join(home,"config.toml"),"utf8"), /mcp_servers/);
