@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.2.2
+
+- Official entry activates the detected default-profile PID instead of an arbitrary application instance sharing the same bundle ID.
+- macOS sends a targeted reopen event and waits for its reply, restores hidden/minimized windows, and verifies both foreground ownership and a visible window before reporting success.
+- Cold launch explicitly starts a default-profile instance with router environment variables removed, then discovers and verifies the actual instance rather than trusting the launcher exit code.
+- Coalesce concurrent official requests and guard SwiftUI entry actions against repeated clicks. Reject unconfirmed activation instead of displaying false success.
+- Exclude custom profiles using either --user-data-dir argument spelling.
+
 ## 3.2.1
 
 - Package a single Universal Node runtime with compatibility aliases, removing the Intel-only helper from the macOS bundle. Require both architectures for the app and runtime in builds and CI.

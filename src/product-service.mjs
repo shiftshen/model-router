@@ -168,7 +168,7 @@ export function parseOfficialRunning(output, root) {
     // 主进程没有 Chromium renderer/crashpad 的子进程参数；这些不能算官方窗口。
     if (/\s--type=/.test(line) || /\s--database=/.test(line)) continue;
     // 带自定义资料目录的都是助手窗口，官方那一个是不带这个参数的。
-    if (line.includes("--user-data-dir=")) continue;
+    if (/--user-data-dir(?:=|\s)/.test(line)) continue;
     if (line.includes(managedRoot)) continue;
     const pid = Number((line.match(/^\s*(\d+)\s/) || [])[1]);
     if (!Number.isInteger(pid) || pid <= 0) continue;
@@ -691,21 +691,32 @@ export class ProductService {
   // 以前这里也给它造了一个窗口（CODEX_HOME 指向助手目录、--user-data-dir 指向空目录），
   // 结果用户点进去看到的是「欢迎使用 ChatGPT 桌面版」的新手引导——登录状态和任务库全没了。
   async launchOfficial() {
-    const running = await this.officialCodexRunning();
-    if (running.length) {
-      const pid = running[0].pid;
-      let activated = false;
-      try {
-        await this.openOfficialDesktop();
-        activated = true;
-      } catch {
-        activated = await activateProcess(pid);
+    if (this.officialLaunchPending) return this.officialLaunchPending;
+    this.officialLaunchPending = this.launchOfficialOnce();
+    try { return await this.officialLaunchPending; }
+    finally { this.officialLaunchPending = null; }
+  }
+
+  async launchOfficialOnce() {
+    let running = await this.officialCodexRunning();
+    const reused = running.length > 0;
+    if (!reused) {
+      await this.openOfficialDesktop();
+      // A successful launch command is not evidence of a running default instance.
+      for (let attempt = 0; attempt < 40; attempt++) {
+        running = await this.officialCodexRunning();
+        if (running.length) break;
+        await new Promise((resolve) => setTimeout(resolve, 250));
       }
-      return { official: true, reused: true, pid, delivered: activated, message: activated ? `ChatGPT Desktop（官方）已经开着（PID ${pid}），已切到前台。` : `ChatGPT Desktop（官方）已经开着（PID ${pid}），没有重复启动；如未到前台请从 Dock 点一下。` };
     }
-    await requireCodexApp();
-    const opened = await this.openOfficialDesktop();
-    return { official: true, reused: false, pid: opened.pid ?? 0, delivered: true, message: "已打开 ChatGPT Desktop（官方）：复用你原来的登录状态、任务库和官方模型选择器。" };
+    const pid = running[0]?.pid ?? 0;
+    const stillOfficial = pid > 0 && (await this.officialCodexRunning()).some((row) => row.pid === pid);
+    const opened = stillOfficial ? await this.openOfficialDesktop({ pid }) : null;
+    const delivered = opened?.delivered === true && opened?.pid === pid;
+    if (!delivered) throw new Error(pid
+      ? `官方 ChatGPT 进程存在（PID ${pid}），但未确认窗口可见并置前。请重试；不会切换到第三方窗口或重复启动。`
+      : "官方 ChatGPT 启动后未检测到默认实例。请直接打开 /Applications/ChatGPT.app 检查启动状态，再重试。");
+    return { official: true, reused, pid, delivered, message: `已打开并确认 ChatGPT Desktop（官方）窗口在前台（PID ${pid}），使用原登录状态和任务库。` };
   }
 
   // 侧边栏点一个模型时的默认动作。原则：已经开着的窗口优先复用，只有确实没有窗口时才新建。

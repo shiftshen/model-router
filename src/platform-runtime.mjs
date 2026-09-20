@@ -230,14 +230,53 @@ export function desktopEnvironment(env = process.env) {
   return result;
 }
 
-export async function openOfficialChatGPTDesktop() {
+export function officialDesktopEnvironment(env = process.env) {
+  const result = desktopEnvironment(env);
+  for (const key of Object.keys(result)) {
+    if (/^(CODEX_HOME|CODEX_PROFILE|OPENAI_BASE_URL|OPENAI_API_KEY|CMA_.*)$/i.test(key)) delete result[key];
+  }
+  return result;
+}
+
+export async function activateOfficialProcess(pid) {
+  const target = Number(pid);
+  if (!Number.isInteger(target) || target <= 0) return false;
+  if (isWindows) return activateProcess(target);
+  // Address the process, not the bundle: every managed window has the same bundle ID.
+  // Native activation needs neither System Events nor Accessibility permission.
+  const script = `ObjC.import('AppKit'); ObjC.import('CoreGraphics');
+    var pid=${target}; var app=$.NSRunningApplication.runningApplicationWithProcessIdentifier(pid);
+    var ok=false;
+    if(app && !app.isTerminated){
+      var target=$.NSAppleEventDescriptor.descriptorWithProcessIdentifier(pid);
+      var event=$.NSAppleEventDescriptor.appleEventWithEventClassEventIDTargetDescriptorReturnIDTransactionID(0x61657674,0x72617070,target,-1,0);
+      var error=Ref(); event.sendEventWithOptionsTimeoutError(3,2,error);
+      app.unhide; app.activateWithOptions(3);
+      for(var i=0;i<12;i++){
+        delay(0.15);
+        var windows=ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(1,0)));
+        var visible=windows.some(function(w){return w.kCGWindowOwnerPID===pid && w.kCGWindowLayer===0 && w.kCGWindowBounds.Width>1 && w.kCGWindowBounds.Height>1;});
+        if(Number($.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier)===pid && visible){ok=true;break;}
+      }
+    }
+    JSON.stringify({delivered:ok});`;
+  try {
+    const { stdout } = await execFileAsync('/usr/bin/osascript', ['-l', 'JavaScript', '-e', script], { timeout: 7000, maxBuffer: 1024 * 1024 });
+    return JSON.parse(stdout).delivered === true;
+  } catch { return false; }
+}
+
+export async function openOfficialChatGPTDesktop({ pid = 0 } = {}) {
+  if (pid > 0) return { pid, launched: false, delivered: await activateOfficialProcess(pid) };
   if (!isWindows) {
     const app = await findMacChatGPTAppBundle();
-    await execFileAsync("/usr/bin/open", [app.appPath], { maxBuffer: 1024 * 1024, env: desktopEnvironment() });
-    return { launched: true, appPath: app.appPath, executable: app.executable, pid: 0 };
+    // The caller has checked that the default instance is absent. A plain open
+    // may reuse a managed instance; -n starts the default profile independently.
+    await execFileAsync("/usr/bin/open", ["-n", "-a", app.appPath], { timeout: 15000, maxBuffer: 1024 * 1024, env: officialDesktopEnvironment() });
+    return { launched: true, delivered: false, appPath: app.appPath, executable: app.executable, pid: 0 };
   }
   const executable = await findCodexDesktopExecutable();
-  const child = spawn(executable, [], { env: desktopEnvironment(), stdio: "ignore", detached: true, windowsHide: false });
+  const child = spawn(executable, [], { env: officialDesktopEnvironment(), stdio: "ignore", detached: true, windowsHide: false });
   await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
   child.unref();
   return { launched: true, executable, pid: child.pid };

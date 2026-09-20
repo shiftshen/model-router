@@ -184,7 +184,7 @@ test("官方入口打开的是 ChatGPT Desktop 默认资料，不新建空资料
   const store = await fixture(context);
   const service = new ProductService(store);
   service.officialCodexRunning = async () => [{ pid: 4242, args: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" }];
-  service.openOfficialDesktop = async () => ({ launched: true, appPath: "/Applications/ChatGPT.app", pid: 0 });
+  service.openOfficialDesktop = async ({ pid }) => ({ launched: false, delivered: true, pid });
   const result = await service.openCodex("official");
   assert.equal(result.official, true);
   assert.equal(result.reused, true);
