@@ -50,6 +50,7 @@ async function main() {
     let syncNote = "";
     try {
       const synced = await service.refreshRouteHomes(input.route.id);
+      await service.refreshCatalogs();
       syncNote = synced.skipped.length ? "；正在运行的专用窗口需重开后应用新模型" : "；已有专用窗口配置已同步";
     } catch (error) { syncNote = `；窗口配置同步失败，重开前请重试保存：${error.message}`; }
     return { ...(await store.publicData()), message: `配置已保存${syncNote}；密钥留空时保留原值，修改端点后需重新填写密钥` };

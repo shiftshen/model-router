@@ -850,7 +850,7 @@ struct ModelLibraryView: View {
                         .help("打开官方 ChatGPT Desktop / Codex 默认资料、登录状态和任务库")
                 } else {
                     Button("真实验证") { Task { await library.perform("probe") } }.disabled(!model.ready || model.archived).help("发送短测试请求，消耗少量供应商额度")
-                    Button("打开 Codex") { Task { await library.openCodex(model.id) } }.buttonStyle(.borderedProminent).disabled(!model.ready || model.archived)
+                    Button("打开可切换窗口") { Task { await library.openCodex(model.id) } }.buttonStyle(.borderedProminent).disabled(!model.ready || model.archived)
                         .help("已经开着的窗口就切过去，没有窗口才新建。到 Codex 顶部的模型选择里换模型即可")
                     Button("新建窗口") { Task { await library.newWindow(initial: model.id) } }.disabled(!model.ready || model.archived)
                         .help("再开一个独立的 Codex 窗口，用这个模型作为起始模型；想看两个模型同时干活时用")

@@ -144,11 +144,15 @@ export const quotaPattern = /quota|resource_exhausted|额度|余额|balance|cred
 
 // 让 Codex 停止无效重试并显示真实原因：4xx 判为请求级失败，额度类判为额度失败，其余保持可重试。
 export function failureCode(status, detail) {
-  if (quotaPattern.test(detail) || status === 429) return "insufficient_quota";
+  // Rate limits, authentication and context failures do not mean the balance is exhausted.
+  if (status === 401) return "authentication_error";
+  if (status === 403) return "permission_denied";
   // 供应商自己报的上下文超限：单独给一个 code，界面才能提示「换个上下文更大的模型」。
   if (/context_window|context length|ContextWindowExceeded|maximum context|too many tokens/i.test(String(detail ?? ""))) return "context_length_exceeded";
   // 超限要说清是「网关挡下的」而不是「模型坏了」：这个 code 让界面能给出可操作的建议。
   if (status === 413) return "payload_too_large";
+  if (/insufficient_quota|quota[_ ](?:exceeded|exhausted)|(?:quota|credits?|balance).{0,24}(?:exhausted|depleted|insufficient)|(?:额度|余额).{0,8}(?:不足|耗尽|用尽)/i.test(String(detail ?? ""))) return "insufficient_quota";
+  if (status === 429 || /rate.?limit|too many requests|resource_exhausted|限流|请求过于频繁/i.test(String(detail ?? ""))) return "rate_limit_exceeded";
   if (status >= 400 && status < 500) return "invalid_prompt";
   return "";
 }
@@ -495,7 +499,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
       if (switched) {
         const table = buildRouterTable((await store.read()).routes);
         const entry = routerTableEntry(table, payload.model);
-        if (!entry) return sendJSON(response, 400, { error: { message: "所选模型不在可切换窗口内，请在模型助手中重新打开切换窗口" } });
+        if (!entry) return sendJSON(response, 400, { error: { code: "model_not_found", type: "invalid_request_error", message: "当前模型标识已失效或被归档，请在本对话的模型选择器中重新选择模型后继续；这不是额度不足。" } });
         route = entry.route;
         payload.model = route.model;
       } else if (!route.model || payload.model !== route.model) {

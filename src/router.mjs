@@ -20,12 +20,12 @@ export function switchableRoutes(routes) {
 }
 
 export function buildRouterTable(routes) {
-  const taken = new Map();
+  const taken = new Map(routes.filter(route => route.routerSlug).map(route => [route.routerSlug, route]));
   return switchableRoutes(routes).map((route) => {
-    const base = slugifyModel(route.model) || slugifyModel(route.id) || "model";
+    const base = route.routerSlug || slugifyModel(route.model) || slugifyModel(route.id) || "model";
     let slug = base;
     let suffix = 1;
-    while (taken.has(slug)) {
+    while (taken.has(slug) && taken.get(slug).id !== route.id) {
       suffix += 1;
       slug = `${base}-${suffix}`;
     }
@@ -37,8 +37,10 @@ export function buildRouterTable(routes) {
 export function routerTableEntry(table, slug) {
   const wanted = String(slug ?? "").trim();
   if (!wanted) return null;
+  const legacy = table.filter(entry => entry.route.routerAliases?.includes(wanted));
   return (
     table.find((entry) => entry.slug === wanted) ||
+    (legacy.length === 1 ? legacy[0] : null) ||
     table.find((entry) => entry.route.model === wanted) ||
     table.find((entry) => entry.route.model.toLowerCase() === wanted.toLowerCase()) ||
     table.find((entry) => entry.route.id === wanted) ||

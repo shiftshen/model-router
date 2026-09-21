@@ -2,6 +2,10 @@
 
 ## 3.2.3
 
+- 固定保存每个条目的路由标识，编辑上游模型、增加同名模型或归档其他模型不会改变旧会话归属。
+- 临时限流、认证、权限和上下文错误分别报告，不再把所有 HTTP 429 都伪装成额度耗尽。
+- 模型保存后同步可切换窗口目录，默认打开入口明确标为「打开可切换窗口」。
+
 - Do not block model startup on optional /models discovery. Validate local configuration and let actual inference determine upstream availability.
 - Preserve manually entered model aliases in discovery; unsupported catalog endpoints retain the current model instead of preventing selection.
 - Saving a route synchronizes existing stopped dedicated/continuation homes, including model catalogs. Running homes explicitly require reopening.

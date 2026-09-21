@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { randomUUID, randomBytes } from "node:crypto";
 import { templates } from "./provider-templates.mjs";
+import { buildRouterTable } from "./router.mjs";
 import { resolveContextWindow, usableWindow } from "./model-windows.mjs";
 
 export const defaultRoot = path.join(os.homedir(), ".codex/model-assistant");
@@ -50,6 +51,14 @@ export function validateRoute(input) {
   for (const key of ["id", "name", "vendor", "endpoint", "protocol", "model", "notes", "docs", "credentialID", "fallback", "runtimeProfile"]) {
     route[key] = String(input[key] ?? "").trim();
     if (route[key].length > (key === "notes" ? 2000 : 500) || /[\u0000-\u001f]/.test(route[key])) throw new Error("字段过长或包含控制字符");
+  }
+  if (input.routerSlug !== undefined) {
+    if (typeof input.routerSlug !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,499}$/.test(input.routerSlug)) throw new Error("路由模型标识无效");
+    route.routerSlug = input.routerSlug;
+  }
+  if (input.routerAliases !== undefined) {
+    if (!Array.isArray(input.routerAliases) || input.routerAliases.length > 100 || input.routerAliases.some(x => typeof x !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,499}$/.test(x))) throw new Error("历史路由标识无效");
+    route.routerAliases = [...new Set(input.routerAliases)];
   }
   if (!route.name) throw new Error("请输入模型名称");
   if (!["oauth", "responses", "chat", "anthropic", "chatgpt"].includes(route.protocol)) throw new Error("不支持此接口协议");
@@ -112,7 +121,9 @@ function seeds() {
     { id: "s5090-qwen", name: "Qwen3.8 27B · 5090", vendor: "局域网 5090", model: "qwen3.8:27b-96k", protocol: "chat", endpoint: "http://127.0.0.1:18791/v1", noKey: true },
     { id: "s5090-ornith", name: "Ornith 1.5 35B · 5090", vendor: "局域网 5090", model: "ornith-1.5:35b-96k", protocol: "chat", endpoint: "http://127.0.0.1:18791/v1", noKey: true },
   ];
-  return { schemaVersion: 2, revision: 1, routes: routes.map(validateRoute) };
+  const validated = routes.map(validateRoute);
+  for (const { slug, route } of buildRouterTable(validated)) route.routerSlug = slug;
+  return { schemaVersion: 2, revision: 1, routes: validated };
 }
 
 export class ModelStore {
@@ -125,6 +136,9 @@ export class ModelStore {
       const validated = data.routes.map(validateRoute);
       const legacyOfficialIDs = new Set(validated.filter(isLegacyOfficialProxy).map((route) => route.id));
       let migrated = legacyOfficialIDs.size > 0;
+      for (const { slug, route } of buildRouterTable(validated)) {
+        if (!route.routerSlug) { route.routerSlug = slug; migrated = true; }
+      }
       data.routes = validated
         .filter((route) => !legacyOfficialIDs.has(route.id))
         .map((route) => {
@@ -228,6 +242,14 @@ export class ModelStore {
     const route = validateRoute({ ...input, endpoint: normalizeEndpoint(input.endpoint) });
     return this.mutate(revision, async (data) => {
       const prior = data.routes.find((entry) => entry.id === route.id);
+      // UI does not own routing identity. Preserve it across model, name and provider edits.
+      delete route.routerSlug;
+      if (prior?.routerAliases) route.routerAliases = prior.routerAliases;
+      if (prior?.routerSlug) route.routerSlug = prior.routerSlug;
+      else {
+        const entry = buildRouterTable([...data.routes.filter(r => r.id !== route.id), route]).find(e => e.route.id === route.id);
+        if (entry) route.routerSlug = entry.slug;
+      }
       const sharedElsewhere = data.routes.some((entry) => entry.id !== route.id && entry.credentialID === route.credentialID && entry.endpoint !== route.endpoint);
       if (sharedElsewhere || (prior && prior.endpoint !== route.endpoint && prior.credentialID === route.credentialID)) {
         route.credentialID = `key-${randomUUID()}`;

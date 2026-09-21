@@ -928,8 +928,8 @@ export class ProductService {
     const updated = [];
     const skipped = [];
     for (const target of targets) {
-      try { await fs.access(path.join(target.home, "state_5.sqlite")); }
-      catch (error) { if (error.code === "ENOENT") { skipped.push({ id: target.id, reason: "还没有任务库" }); continue; } throw error; }
+      try { await fs.access(path.join(target.home, "config.toml")); }
+      catch (error) { if (error.code === "ENOENT") { skipped.push({ id: target.id, reason: "窗口尚未初始化" }); continue; } throw error; }
       const catalogPath = path.join(target.home, "model-catalog.json");
       await atomicJSON(catalogPath, routerCatalog(table));
       if (running.has(target.id)) {

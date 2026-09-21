@@ -310,7 +310,7 @@ test("地址粘贴控制台链接或省略版本号时自动补成可用服务�
   assert.equal((await store.route("paste3")).endpoint, "https://api.deepseek.com/v1");
 });
 
-test("供应商错误原因被安全地转达，额度问题被标记成额度失败", async (context) => {
+test("供应商容量限制如实转达，不误报余额耗尽", async (context) => {
   const store = await fixture(context);
   const target = await listen(http.createServer(async (request, response) => {
     if (request.url === "/v1/messages") {
@@ -328,11 +328,11 @@ test("供应商错误原因被安全地转达，额度问题被标记成额度�
   const payload = JSON.stringify({ model: "gemini-3.7-flash-high", input: "hi", stream: true });
   const body = await (await fetch(`${gateway}/routes/quota/v1/responses`, { method: "POST", headers, body: payload })).text();
   assert.match(body, /response\.failed/);
-  assert.match(body, /"code":"insufficient_quota"/);
+  assert.match(body, /"code":"rate_limit_exceeded"/);
   assert.match(body, /RESOURCE_EXHAUSTED/);
   assert.ok(!body.includes("sk-secretsecret123"));
   const plain = await (await fetch(`${gateway}/routes/quota/v1/responses`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ model: "gemini-3.7-flash-high", input: "hi" }) })).json();
-  assert.equal(plain.error.code, "insufficient_quota");
+  assert.equal(plain.error.code, "rate_limit_exceeded");
   assert.match(plain.error.message, /RESOURCE_EXHAUSTED/);
 });
 
