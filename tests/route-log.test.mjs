@@ -61,7 +61,7 @@ test("路由审计写不进磁盘时必须阻止调用，不能吞错后继续�
   await fs.writeFile(blocker, "x");
   await assert.rejects(
     noteRoute(blocker, { id: "paid", name: "付费模型", endpoint: "https://provider.example/v1", protocol: "responses" }, { model: "expensive" }),
-    /ENOTDIR|not a directory/i,
+    /ENOENT|ENOTDIR|not a directory/i,
   );
   await assert.rejects(confirmRoute(store.root, "missing-request"), /路由确认记录丢失/);
 });

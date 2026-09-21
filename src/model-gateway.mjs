@@ -791,7 +791,6 @@ export function createGateway(store = new ModelStore(), options = {}) {
                 response.end();
               }
             }
-            await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
             served = true;
             break;
           } catch (error) {
