@@ -12,6 +12,7 @@ import { readDiskPolicy } from "./disk-policy.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
 import { buildRouterTable, modelInfo, routerCatalog, routerID, routerProviderID, routerTableEntry } from "./router.mjs";
 import { resolveRuntimeProfile } from "./runtime-profile.mjs";
+import { officialModels, officialTokens } from "./chatgpt-auth.mjs";
 export { resolveRuntimeProfile } from "./runtime-profile.mjs";
 import {
   allocateWindow,
@@ -438,10 +439,32 @@ export class ProductService {
     throw new Error("Bonsai 27B 已启动但 15 秒内没有通过健康检查；请查看本机内存占用或模型运行日志");
   }
 
+  async syncOfficialModels() {
+    const models = await officialModels(this.officialHome);
+    const data = await this.store.read();
+    await this.store.mutate(data.revision, library => {
+      for (const model of models) {
+        const id = "chatgpt-" + model.slug.replace(/[^a-z0-9-]/gi, "-").toLowerCase().slice(0,55);
+        if (library.routes.some(route => route.id === id)) continue;
+        library.routes.push(validateRoute({ id, name: "ChatGPT · " + (model.display_name || model.slug),
+          vendor: "OpenAI · 登录订阅额度", protocol: "chatgpt", model: model.slug,
+          noKey: true, switchable: true, runtimeProfile: "full", contextWindow: model.context_window || 0,
+          reasoningLevels: (model.supported_reasoning_levels || []).map(level => level.effort), defaultReasoning: model.default_reasoning_level,
+          notes: "复用官方登录。可在同一工作会话切换第三方模型，无需退出账号。官方额度由 OpenAI 管理。" }));
+      }
+      return library;
+    });
+    await this.refreshCatalogs();
+    return { ...(await this.store.publicData()), message: "已同步 " + models.length + " 个官方登录模型。重开工作窗口后，在每个会话的模型菜单中切换；无需退出账号。" };
+  }
   async discover(route) {
     const checked = validateRoute(route);
     await this.ensureManagedLocalService(checked);
     if (checked.protocol === "oauth") return { models: [], message: "官方模型由 ChatGPT Desktop 自己管理，请在原版客户端内选择" };
+    if (checked.protocol === "chatgpt") {
+      const models = (await officialModels(this.officialHome)).map(model => model.slug);
+      return { models: [...new Set([checked.model, ...models].filter(Boolean))], listedModels: models, message: "官方登录模型目录；可用性和额度以真实验证为准" };
+    }
     let data;
     try {
       const result = await upstream(checked, await this.store.secret(checked.credentialID), "models", null, 15000);
@@ -476,6 +499,7 @@ export class ProductService {
     await this.ensureManagedLocalService(route);
     if (route.archived) throw new Error("此模型已归档，请先恢复");
     if (route.protocol === "oauth") return { protocol: "oauth", message: "ChatGPT Desktop 官方入口不需要识别接口", tested: [] };
+    if (route.protocol === "chatgpt") { await officialTokens({ file: path.join(this.officialHome, "auth.json") }); return { protocol: "chatgpt", changed: false, tested: [], message: "官方登录使用固定接口，无需探测第三方协议" }; }
     if (!route.model) throw new Error("请先选择模型 ID");
     const key = await this.store.secret(route.credentialID);
     const probes = {

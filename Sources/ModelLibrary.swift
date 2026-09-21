@@ -21,6 +21,8 @@ struct ManagedModel: Codable, Identifiable, Hashable {
     var contextWindow: Int
     var hasKey: Bool?
     var verifiedAt: String?
+    var reasoningLevels: [String]? = nil
+    var defaultReasoning: String? = nil
     var ready: Bool { `protocol` == "oauth" || (!model.isEmpty && (noKey || hasKey == true)) }
     var status: String { archived ? "已归档" : (verifiedAt != nil ? "推理已验证" : (ready ? "待验证" : "待配置")) }
     var icon: String { `protocol` == "oauth" ? "sparkles" : (noKey ? "desktopcomputer" : "network") }
@@ -330,6 +332,15 @@ final class LibraryViewModel: ObservableObject {
     // 「这个模型是不是已经开着」：官方入口看 ChatGPT Desktop 默认资料进程；其它模型看有没有窗口正跑着它
     // （起始模型就是它），再加上本地实例的状态。以前只查本地实例，所以普通模型明明开着也不亮。
     // Codex 记的是「模型 slug」，助手库里存的是条目 id。三种都对一遍，显示成可读名字。
+    func syncOfficialModels() async {
+        guard !busy else { return }
+        busy = true
+        let response = await call(["sync-official-models"], timeout: 90)
+        busy = false
+        if response.ok { await refresh() }
+        accept(response)
+    }
+
     func displayName(forModelKey key: String?) -> String? {
         guard let key, !key.isEmpty else { return nil }
         if let hit = switchModels.first(where: { $0.slug == key || $0.id == key || $0.model == key }) { return hit.name }

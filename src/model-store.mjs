@@ -60,6 +60,8 @@ export function validateRoute(input) {
     if (!Array.isArray(input.routerAliases) || input.routerAliases.length > 100 || input.routerAliases.some(x => typeof x !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,499}$/.test(x))) throw new Error("历史路由标识无效");
     route.routerAliases = [...new Set(input.routerAliases)];
   }
+  if (Array.isArray(input.reasoningLevels)) route.reasoningLevels = input.reasoningLevels.filter(x => ["none","minimal","low","medium","high","xhigh","max","ultra"].includes(x));
+  if (route.reasoningLevels?.includes(input.defaultReasoning)) route.defaultReasoning = input.defaultReasoning;
   if (!route.name) throw new Error("请输入模型名称");
   if (!["oauth", "responses", "chat", "anthropic", "chatgpt"].includes(route.protocol)) throw new Error("不支持此接口协议");
   route.runtimeProfile ||= "auto";
@@ -245,6 +247,7 @@ export class ModelStore {
       // UI does not own routing identity. Preserve it across model, name and provider edits.
       delete route.routerSlug;
       if (prior?.routerAliases) route.routerAliases = prior.routerAliases;
+      if (route.protocol === "chatgpt" && prior?.model === route.model && !route.reasoningLevels) { route.reasoningLevels = prior.reasoningLevels; route.defaultReasoning = prior.defaultReasoning; }
       if (prior?.routerSlug) route.routerSlug = prior.routerSlug;
       else {
         const entry = buildRouterTable([...data.routes.filter(r => r.id !== route.id), route]).find(e => e.route.id === route.id);

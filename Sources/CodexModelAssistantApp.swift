@@ -315,6 +315,8 @@ struct ModelLibraryView: View {
                 .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             HStack(spacing: 8) {
+                Button("加入可切换窗口") { Task { await library.syncOfficialModels() } }
+                    .controlSize(.small).disabled(library.busy)
                 Button("打开 / 切到 ChatGPT Desktop") { Task { await library.openCodex("official") } }
                     .buttonStyle(.borderedProminent).controlSize(.small).disabled(library.busy)
                 Spacer()

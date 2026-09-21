@@ -43,16 +43,17 @@ struct ModelEditor: View {
                 TextField("显示名称", text: $draft.name)
                 TextField("供应商", text: $draft.vendor)
                 if draft.protocol == "oauth" {
-                    Picker("官方模型", selection: $draft.model) {
-                        ForEach(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini"], id: \.self) { model in Text(model).tag(model) }
-                    }
+                    Text("官方独立入口的模型由 ChatGPT Desktop 自己管理。")
                 } else {
                     TextField("模型 ID", text: $draft.model, prompt: Text("可手动输入，也可保存后发现模型"))
                 }
                 if draft.protocol != "oauth" {
-                    TextField("API 地址", text: $draft.endpoint)
+                    if draft.protocol == "chatgpt" {
+                        Text("使用官方客户端的登录账号与订阅额度；无需 Key，切第三方无需退出登录。").font(.caption).foregroundStyle(.secondary)
+                    } else { TextField("API 地址", text: $draft.endpoint) }
                     Text("可以直接粘贴控制台地址（例如 http://127.0.0.1:8080/#accounts）或只写到主机名，保存时会自动补成可用的服务地址。").font(.caption).foregroundStyle(.secondary)
                     Picker("接口格式", selection: $draft.protocol) {
+                        Text("ChatGPT 登录订阅").tag("chatgpt")
                         Text("Responses API").tag("responses")
                         Text("Chat Completions").tag("chat")
                         Text("Anthropic Messages").tag("anthropic")
@@ -74,8 +75,8 @@ struct ModelEditor: View {
                         Text("完整 Full（Plugins / MCP / Skills）").tag("full")
                     }
                     Text("Auto 对本地无 Key 模型使用 Lite，云端模型使用 Full。环境类型更改后重开窗口生效；需要连接器、WebCodex 或完整工具生态时可选择 Full。").font(.caption).foregroundStyle(.secondary)
-                    Toggle("无需 API Key（本地服务）", isOn: $draft.noKey)
-                    if !draft.noKey {
+                    if draft.protocol != "chatgpt" { Toggle("无需 API Key（本地服务）", isOn: $draft.noKey) }
+                    if !draft.noKey && draft.protocol != "chatgpt" {
                         SecureField(draft.hasKey == true ? "新 API Key（留空保留）" : "API Key", text: $key).textContentType(.password)
                         Text("同供应商模板默认共用 Key。修改 API 地址后需要重新输入 Key。").font(.caption).foregroundStyle(.secondary)
                         if draft.hasKey == true { Toggle("清除已保存的 Key", isOn: $clearKey).tint(.red) }

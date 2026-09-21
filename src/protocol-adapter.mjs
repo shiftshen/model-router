@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { portableHistory } from "./portable-history.mjs";
 
 function toolDefinitions(tools = [], namespace = "") {
   return tools.flatMap((tool) => {
@@ -281,10 +282,11 @@ export function createResponseStream({ model, send }) {
 }
 
 export function nativePayload(payload, model) {
-  const result = structuredClone(payload);
+  const result = portableHistory(payload);
   result.model = model;
   result.store = false;
   delete result.service_tier;
+  delete result.session_id;
   delete result.prompt_cache_key;
   delete result.prompt_cache_retention;
   if (result.tools) result.tools = result.tools.filter((tool) => ["function", "custom", "namespace"].includes(tool.type));

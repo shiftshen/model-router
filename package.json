@@ -1,10 +1,13 @@
 {
   "name": "model-router",
-  "version": "3.2.4",
+  "version": "3.3.0",
   "description": "Multi-provider desktop model router and workspace companion for ChatGPT Desktop and Codex.",
   "author": "Shift Shen",
   "homepage": "https://github.com/shiftshen/model-router",
-  "repository": { "type": "git", "url": "https://github.com/shiftshen/model-router.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shiftshen/model-router.git"
+  },
   "private": true,
   "type": "module",
   "main": "windows/main.mjs",
@@ -44,11 +47,15 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },

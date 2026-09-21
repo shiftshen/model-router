@@ -11,10 +11,10 @@ export function slugifyModel(value) {
     .replace(/^[.\-]+|[.\-]+$/g, "");
 }
 
-// 可切换窗口只接入网关能转换的第三方接口；官方 ChatGPT 登录自带模型选择，不重复接入。
+// 官方独立入口不经过路由；用户同步的 ChatGPT 登录模型可在工作窗口切换。
 export function switchableRoutes(routes) {
   return routes
-    .filter((route) => !route.archived && !["oauth", "chatgpt"].includes(route.protocol) && Boolean(route.model))
+    .filter((route) => !route.archived && route.protocol !== "oauth" && (route.protocol !== "chatgpt" || route.switchable) && Boolean(route.model))
     .slice()
     .sort((left, right) => left.id.localeCompare(right.id));
 }
@@ -54,8 +54,8 @@ export function modelInfo(route, slug) {
     slug,
     display_name: route.name,
     description: route.vendor,
-    default_reasoning_level: "medium",
-    supported_reasoning_levels: [],
+    default_reasoning_level: route.defaultReasoning || "medium",
+    supported_reasoning_levels: (route.reasoningLevels || []).map(effort => ({ effort, description: effort })),
     shell_type: "unified_exec",
     visibility: "list",
     supported_in_api: true,

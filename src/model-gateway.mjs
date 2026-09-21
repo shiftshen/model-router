@@ -14,7 +14,7 @@ import { LocalQueue } from "./local-queue.mjs";
 import { buildRouterTable, routerID, routerTableEntry } from "./router.mjs";
 import { toChat, toAnthropic, fromCompletion, responseEvents, createResponseStream, nativePayload } from "./protocol-adapter.mjs";
 import { anthropicStreamParser, chatStreamParser } from "./stream-parsers.mjs";
-import { chatgptBaseURL, officialHeaders, officialPayload, officialTokens } from "./chatgpt-auth.mjs";
+import { chatgptBaseURL, officialHeaders, officialPayload, officialTokens, officialResponseJSON } from "./chatgpt-auth.mjs";
 import {
   buildCompactedInput,
   estimateTokens,
@@ -204,8 +204,10 @@ export async function compactForWindow({ store, route, payload, limit, signal, k
     // 摘要请求同样会真花钱，而且带着整段历史（上下文最大的请求）。
     // 它绕过了上面那个路由候选循环，所以必须单独记一笔——否则「今天请求都去了谁」是漏的。
     await noteRoute(store.root, summarizer, { model: summarizer.model, kind: "summary", sessionId });
-    const result = await upstream(summarizer, key, suffix, summaryBody, 120000, signal, sessionId);
-    const body = await limitedJSON(result.body, responseLimitBytes);
+    const result = summarizer.protocol === "chatgpt"
+      ? await officialUpstream(summarizer, request, signal, 120000)
+      : await upstream(summarizer, key, suffix, summaryBody, 120000, signal, sessionId);
+    const body = summarizer.protocol === "chatgpt" ? await officialResponseJSON(result) : await limitedJSON(result.body, responseLimitBytes);
     if (summarizer.protocol === "chat") summary = String(body?.choices?.[0]?.message?.content ?? "").trim();
     else if (summarizer.protocol === "anthropic") summary = extractSummary({ output: (body?.content ?? []).map((part) => ({ type: "message", content: [part] })) });
     else summary = extractSummary(body);
@@ -227,7 +229,7 @@ export async function pickSummarizer(store, route, neededTokens) {
   if (resolveContextWindow(route) >= neededTokens) return route;
   const data = await store.read();
   const candidates = data.routes
-    .filter((entry) => !entry.archived && entry.protocol !== "oauth" && entry.model)
+    .filter((entry) => !entry.archived && entry.protocol !== "oauth" && entry.model && (entry.protocol === "chatgpt") === (route.protocol === "chatgpt"))
     .sort((left, right) => resolveContextWindow(right) - resolveContextWindow(left));
   return candidates[0] ?? route;
 }
@@ -324,7 +326,7 @@ export async function upstream(route, key, suffix, body, timeout = 3600000, sign
   if (isOpencodeEndpoint(route.endpoint)) headers["x-opencode-session"] = opencodeSessionFor(route, sessionId);
   const response = await fetch(`${route.endpoint}/${suffix}`, {
     method: body ? "POST" : "GET", headers, body: body ? JSON.stringify(body) : undefined,
-    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout), redirect: "error",
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)].filter(Boolean)) : AbortSignal.timeout(timeout), redirect: "error",
   });
   if (!response.ok) {
     throw upstreamFailure(response.status, await failureDetail(response));
@@ -350,7 +352,13 @@ export async function officialUpstream(route, payload, signal, timeout = 3600000
     signal: AbortSignal.any([signal, AbortSignal.timeout(timeout)]),
     redirect: "error",
   });
-  if (!response.ok) throw upstreamFailure(response.status, await failureDetail(response));
+  if (!response.ok) {
+    const error = upstreamFailure(response.status, await failureDetail(response));
+    if (response.status === 401) error.message = "官方登录已失效，请打开官方客户端刷新登录；第三方模型仍可使用";
+    if (response.status === 403) error.message = "当前官方账号无权使用这个模型";
+    if (response.status === 429) error.message = "官方订阅额度不足或请求过于频繁，可在本会话切换第三方模型";
+    throw error;
+  }
   return response;
 }
 
@@ -492,6 +500,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
       if (request.method !== "POST" || endpoint !== "responses") return sendJSON(response, 405, { error: { message: "请求方法不支持" } });
       // 先量一下请求体：后面既要用它做上下文预检，也要拿原始字节数去比 contextWindow。
       const payload = await limitedJSON(request, requestLimitBytes);
+      payload.session_id ||= String(request.headers.session_id || request.headers["x-codex-thread-id"] || "").slice(0,200);
       const payloadBytes = Number(payload.__bytes) || 0;
       let payloadBytesNote = "";
       // 压缩只做一次：预检做过就不再重复，避免「压了又压」把会话掏空。
@@ -582,11 +591,18 @@ export function createGateway(store = new ModelStore(), options = {}) {
           const targetPayload = payloadForRoute(payload, target);
           try {
             if (attempt === "chatgpt") {
-              const result = await officialUpstream({ ...target, protocol: attempt }, { ...targetPayload, model: target.model }, callSignal);
-              if (!response.headersSent) response.writeHead(200, { "content-type": result.headers.get("content-type") || "application/json", "cache-control": "no-store" });
-              sseStream = true;
+              const result = await (options.officialUpstream || officialUpstream)({ ...target, protocol: attempt }, { ...targetPayload, model: target.model }, callSignal);
+              if (payload.stream && !response.headersSent) response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
               armIdle();
-              await pipeline(Readable.fromWeb(result.body), response);
+              if (!payload.stream) {
+                const body = await officialResponseJSON(result);
+                if (!response.headersSent) sendJSON(response, 200, body);
+                else response.end(JSON.stringify(body));
+              } else {
+                sseStream = true;
+                eventsSent = true;
+                await pipeline(Readable.fromWeb(result.body), response);
+              }
               disarmIdle();
             } else if (attempt === "responses") {
               const result = await upstream({ ...target, protocol: attempt }, targetKey, "responses", nativePayload({ ...targetPayload, model: target.model }, target.model), 3600000, callSignal, payload.session_id);
@@ -596,6 +612,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
               if (!response.headersSent) response.writeHead(200, { "content-type": result.headers.get("content-type") || "application/json", "cache-control": "no-store" });
               if ((result.headers.get("content-type") || "").includes("text/event-stream")) sseStream = true;
               armIdle();
+              eventsSent = true;
               await pipeline(Readable.fromWeb(result.body), response);
               disarmIdle();
             } else {

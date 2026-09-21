@@ -292,6 +292,7 @@ async function main() {
     const update = await prepareUpdate({ currentVersion, platform, root: store.root, appPid, appPath, portable });
     return { ok: true, update, message: update.available ? (update.prepared ? `新版本 ${update.latestVersion} 已下载，准备安装` : update.message) : update.message };
   }
+  if (command === "sync-official-models") return service.syncOfficialModels();
   if (command === "prepare") return service.prepare(id);
   if (command === "diagnostics") return service.diagnostics();
   if (command === "export") return { exportData: JSON.stringify(await store.read(), null, 2), message: "导出不包含 API Key 和登录凭据" };

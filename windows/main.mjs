@@ -9,7 +9,7 @@ const projectRoot = path.resolve(here, "..");
 const allowedCommands = new Set([
   "library", "save", "archive", "discover", "check", "autodetect", "probe",
   "start-gateway", "launch", "open-codex", "usage-report", "recent-routes",
-  "live-threads", "continue", "switch-status", "windows", "refresh-catalogs",
+  "live-threads", "continue", "switch-status", "windows", "refresh-catalogs", "sync-official-models",
   "new-window", "open-window", "rename-window", "close-window", "delete-window",
   "adopt-window", "disk-usage", "cleanup-plan", "diagnostics", "export",
   "enable-switching", "disable-switching", "set-fallback", "hide", "check-update", "prepare-update"

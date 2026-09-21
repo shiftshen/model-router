@@ -27,7 +27,7 @@ function renderUsage() {
 function renderWindows() {
   const target = byId("windows");
   const items = state.windows || [];
-  const official = '<article class="card official-card"><div class="card-head"><div><div class="title">ChatGPT Desktop（官方）</div><div class="muted">原版 · 复用你的 ChatGPT/Codex 登录</div></div><span class="badge ok">官方</span></div><div class="official-note">直接打开系统里的官方 ChatGPT Desktop / Codex 默认资料。不会创建 Model Router CODEX_HOME，也不会进入第三方模型路由；官方模型请在原版客户端里选择。</div><div class="card-actions"><button class="primary" data-official-open="1">打开 / 切到 ChatGPT Desktop</button></div></article>';
+  const official = '<article class="card official-card"><div class="card-head"><div><div class="title">ChatGPT Desktop（官方）</div><div class="muted">原版 · 复用你的 ChatGPT/Codex 登录</div></div><span class="badge ok">官方</span></div><div class="official-note">直接打开系统里的官方 ChatGPT Desktop / Codex 默认资料。不会创建 Model Router CODEX_HOME，也不会进入第三方模型路由；官方模型请在原版客户端里选择。</div><div class="card-actions"><button data-sync-official="1">加入可切换窗口</button><button class="primary" data-official-open="1">打开 / 切到 ChatGPT Desktop</button></div></article>';
   const managed = items.map((w) => {
     const current = state.switchModels.find((m) => m.slug === w.currentModel || m.id === w.currentModel || m.model === w.currentModel);
     const initial = routeById(w.initialModel);
@@ -182,6 +182,7 @@ document.addEventListener("click", async (event) => {
   if (!el) return;
   try {
     if (el.dataset.editModel) return openEditor(routeById(el.dataset.editModel));
+    if (el.dataset.syncOfficial) { el.disabled = true; try { const result = await call("sync-official-models"); await refresh(); accept(result); setStatus(result.message || "官方登录模型已加入"); } finally { el.disabled = false; } return; }
     if (el.dataset.officialOpen) { setStatus("正在打开 ChatGPT Desktop（官方）…"); accept(await call("open-codex", ["official"])); return; }
     if (el.dataset.openModel) { setStatus("正在打开 Codex…"); accept(await call("open-codex", [el.dataset.openModel])); return; }
     if (el.dataset.checkModel) { setStatus("正在检查连接…"); setStatus((await call("check", [el.dataset.checkModel])).message || "连接正常"); return; }
