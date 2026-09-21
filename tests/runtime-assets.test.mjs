@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { ProductService, renderRouterConfig } from '../src/product-service.mjs';
 import { litePayload } from '../src/runtime-profile.mjs';
+import { ModelStore } from '../src/model-store.mjs';
+import { windowPaths, writeWindowRegistry } from '../src/window-registry.mjs';
 
 test('Full to Lite unlinks shared assets without changing global originals; Full restores them', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'router-assets-'));
@@ -19,6 +21,15 @@ test('Full to Lite unlinks shared assets without changing global originals; Full
   for (const name of ['auth.json', 'AGENTS.md', 'hooks.json', 'requirements.toml']) await fs.writeFile(path.join(official, name), 'original');
   const service = new ProductService(); service.officialHome = official;
   await service.syncSharedRuntimeAssets(home, 'full');
+  const authPath = path.join(home, 'auth.json');
+  assert.equal(await fs.readFile(authPath, 'utf8'), 'original');
+  if (process.platform === 'win32') assert.equal((await fs.lstat(authPath)).isSymbolicLink(), false);
+  else assert.equal((await fs.lstat(authPath)).isSymbolicLink(), true);
+  await fs.writeFile(path.join(official, 'auth.next'), 'replacement');
+  await fs.rename(path.join(official, 'auth.next'), path.join(official, 'auth.json'));
+  if (process.platform !== 'win32') assert.equal(await fs.readFile(authPath, 'utf8'), 'replacement', 'macOS link must follow atomic account replacement immediately');
+  await service.syncOfficialAuthAsset(home);
+  assert.equal(await fs.readFile(authPath, 'utf8'), 'replacement');
   await service.syncSharedRuntimeAssets(home, 'lite');
   for (const name of ['skills', 'plugins', 'hooks.json', 'requirements.toml']) await assert.rejects(fs.lstat(path.join(home, name)), { code: 'ENOENT' });
   assert.equal(await fs.readFile(path.join(official, 'AGENTS.md'), 'utf8'), 'original');
@@ -26,6 +37,24 @@ test('Full to Lite unlinks shared assets without changing global originals; Full
   assert.match(await fs.readFile(path.join(home, 'AGENTS.md'), 'utf8'), /^# Model Router Lite/);
   await service.syncSharedRuntimeAssets(home, 'full');
   assert.equal(await fs.readFile(path.join(home, 'AGENTS.md'), 'utf8'), 'original');
+});
+
+test('account sync updates every registered work window and returns safe account status', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'router-account-sync-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new ModelStore(path.join(root, 'store')); await store.read();
+  const official = path.join(root, 'official'); await fs.mkdir(official);
+  const jwt = (value) => 'x.' + Buffer.from(JSON.stringify(value)).toString('base64url') + '.x';
+  await fs.writeFile(path.join(official, 'auth.json'), JSON.stringify({auth_mode:'chatgpt',tokens:{access_token:jwt({exp:4102444800}),id_token:jwt({email:'owner@example.com',name:'Owner'}),account_id:'account-12345678'}}));
+  await writeWindowRegistry(store.root, {windows:[{id:'router',name:'常用'},{id:'w2',name:'窗口 2'}]});
+  for (const id of ['router','w2']) await fs.mkdir(windowPaths(store.root, id).homePath, {recursive:true});
+  const service = new ProductService(store); service.officialHome = official;
+  const result = await service.syncOfficialAuthHomes();
+  assert.deepEqual(result.updated, ['router','w2']);
+  assert.equal(result.account.email, 'owner@example.com');
+  assert.equal(result.account.accountSuffix, '12345678');
+  assert.ok(!JSON.stringify(result.account).includes('access_token'));
+  for (const id of result.updated) assert.equal(JSON.parse(await fs.readFile(path.join(windowPaths(store.root, id).homePath, 'auth.json'), 'utf8')).tokens.account_id, 'account-12345678');
 });
 
 test('Lite config remains bounded even with huge top-level instructions and hundreds of sections', () => {

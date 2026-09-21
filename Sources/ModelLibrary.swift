@@ -85,6 +85,7 @@ struct ProductResponse: Decodable {
     var fallbacks: [FallbackEvent]?
     var recentRoutes: [RecentRoute]?
     var todayUsage: DayUsage?
+    var officialAccount: OfficialAccount?
     var window: WorkWindow?
     var pid: Int?
     var disk: DiskUsage?
@@ -95,6 +96,21 @@ struct ProductResponse: Decodable {
     var officialCleanup: OfficialCleanupResult?
     var threads: [LiveThread]?
     var update: UpdateInfo?
+}
+
+struct OfficialAccount: Decodable, Hashable {
+    var signedIn: Bool
+    var name: String?
+    var email: String?
+    var accountSuffix: String?
+    var expiresAt: String?
+    var expired: Bool?
+
+    var label: String {
+        if !signedIn { return "官方账号：未登录" }
+        let identity = email?.isEmpty == false ? email! : (name?.isEmpty == false ? name! : "已登录")
+        return "官方账号：\(identity)"
+    }
 }
 
 // 磁盘占用与可回收量。助手目录里同一批会话会在每个窗口各存一份，是这套多窗口机制最容易失控的地方。
@@ -204,18 +220,29 @@ struct DayUsage: Decodable, Hashable {
     var day: String
     var hosts: [String: Int]?
     var fallbacks: [String: Int]?
+    var confirmed: [String: Int]?
+    var failed: [String: Int]?
     var total: Int?
+    var confirmedTotal: Int?
+    var failedTotal: Int?
 }
 
 struct RecentRoute: Decodable, Identifiable, Hashable {
+    var requestId: String?
     var at: String
     var route: String
     var name: String?
     var host: String
     var model: String?
+    var requestedModel: String?
+    var observedModel: String?
+    var `protocol`: String?
     var fallback: Bool?
     var sessionId: String?
-    var id: String { "\(at)|\(route)|\(host)" }
+    var status: String?
+    var confirmed: Bool?
+    var error: String?
+    var id: String { requestId ?? "\(at)|\(route)|\(host)" }
 }
 
 struct FallbackEvent: Decodable, Identifiable, Hashable {
@@ -306,6 +333,7 @@ final class LibraryViewModel: ObservableObject {
     @Published var fallbacks: [FallbackEvent] = []
     @Published var recentRoutes: [RecentRoute] = []
     @Published var todayUsage: DayUsage?
+    @Published var officialAccount = OfficialAccount(signedIn: false)
     @Published var liveThreads: [LiveThread] = []
     @Published var newWindowModel = ""
     @Published var disk: DiskUsage?
@@ -452,6 +480,7 @@ final class LibraryViewModel: ObservableObject {
         if let values = response.fallbacks { fallbacks = values }
         if let values = response.recentRoutes { recentRoutes = values }
         if let value = response.todayUsage { todayUsage = value }
+        if let value = response.officialAccount { officialAccount = value }
         if let values = response.threads { liveThreads = values }
         if let value = response.disk { disk = value }
         if let value = response.cleanupPlan { diskPlan = value }
@@ -625,6 +654,16 @@ final class LibraryViewModel: ObservableObject {
         let response = await call(["open-codex", id])
         accept(response)
         raiseWindowIfNeeded(response.pid ?? response.window?.pid)
+        busy = false
+    }
+
+    func syncAccount() async {
+        guard !busy else { return }
+        busy = true
+        success = nil
+        message = "正在同步官方账号到所有工作窗口…"
+        let response = await call(["sync-account"], timeout: 90)
+        accept(response)
         busy = false
     }
 

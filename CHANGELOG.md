@@ -1,3 +1,10 @@
+## 3.3.2
+
+- 模型切换新增 started / confirmed / failed 两阶段审计，记录 Thread、真实上游、请求模型和供应商返回模型；只有完整成功才显示“已确认”。
+- 流式请求先确认路由落盘再结束客户端响应，并处理背压及客户端断开，避免完成状态与审计竞态。
+- macOS / Windows 显示当前官方账号并提供更换、同步入口；macOS 实时跟随官方认证，Windows 显式同步最新认证。
+- 同一 Thread 实机完成 8 轮官方 GPT-5.6-Luna ↔ 字节 Coding Plan ark-code-latest 交替验证，8 次均为 HTTP 200 且路由证据 confirmed。
+
 ## 3.3.1
 
 - 所有 Model Router 工作窗口统一为可切换窗口，模型配置不再提供单模型模式。

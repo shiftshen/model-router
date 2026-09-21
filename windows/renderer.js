@@ -1,4 +1,4 @@
-let state = { revision: 0, routes: [], windows: [], threads: [], switchModels: [], todayUsage: null, fallbacks: [], update: null };
+let state = { revision: 0, routes: [], windows: [], threads: [], switchModels: [], todayUsage: null, officialAccount: null, fallbacks: [], update: null };
 let platformInfo = { platform: "win32", arch: "x64", version: "0.0.0", packaged: false, portable: false };
 const byId = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
@@ -21,13 +21,23 @@ function baseName(value) { return String(value || "").replaceAll("\\\\", "/").sp
 function renderUsage() {
   const u = state.todayUsage;
   const hosts = u && u.hosts ? Object.entries(u.hosts).map(([k,v]) => k + " ×" + v).join(" · ") : "今天还没有网关请求";
-  byId("usage").textContent = hosts;
+  const latest = (state.recentRoutes || [])[0];
+  const routeStatus = latest
+    ? (latest.confirmed ? "最近已确认：" : (latest.status === "failed" ? "最近失败：" : "最近未确认："))
+      + (latest.name || latest.route) + " · " + (latest.requestedModel || latest.model || "?") + " → " + latest.host
+    : "";
+  byId("usage").textContent = [routeStatus, hosts].filter(Boolean).join(" ｜ ");
+  const account = state.officialAccount || {};
+  const identity = account.email || account.name || "已登录";
+  byId("accountStatus").textContent = account.signedIn ? "官方账号：" + identity + (account.expired ? "（已过期）" : "") : "官方账号：未登录";
 }
 
 function renderWindows() {
   const target = byId("windows");
   const items = state.windows || [];
-  const official = '<article class="card official-card"><div class="card-head"><div><div class="title">官方登录与模型同步</div><div class="muted">官方客户端只负责登录与续期</div></div><span class="badge ok">授权</span></div><div class="official-note">同步后，常用及所有新窗口都能在同一会话中切换官方登录模型和普通 API，无需退出账号。</div><div class="card-actions"><button data-official-open="1">登录 / 续期</button><button class="primary" data-open-official-work="1">同步并打开可切换窗口</button></div></article>';
+  const account = state.officialAccount || {};
+  const accountText = account.signedIn ? "当前账号：" + escapeHtml(account.email || account.name || "已登录") + (account.expired ? "（已过期）" : "") : "当前未登录官方账号";
+  const official = '<article class="card official-card"><div class="card-head"><div><div class="title">官方登录与模型同步</div><div class="muted">官方客户端只负责登录与续期</div></div><span class="badge ' + (account.signedIn && !account.expired ? "ok" : "warn") + '">' + (account.signedIn ? "已登录" : "未登录") + '</span></div><div class="official-note">' + accountText + '</div><div class="official-note">同步后，常用及所有新窗口都能在同一会话中切换官方登录模型和普通 API，无需退出账号。</div><div class="card-actions"><button data-official-open="1">登录 / 更换账号</button><button data-account-sync="1">同步账号</button><button class="primary" data-open-official-work="1">同步并打开可切换窗口</button></div></article>';
   const managed = items.map((w) => {
     const current = state.switchModels.find((m) => m.slug === w.currentModel || m.id === w.currentModel || m.model === w.currentModel);
     const initial = routeById(w.initialModel);
@@ -194,6 +204,7 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (el.dataset.officialOpen) { setStatus("正在打开 ChatGPT Desktop（官方）…"); accept(await call("open-codex", ["official"])); return; }
+    if (el.dataset.accountSync) { setStatus("正在同步官方账号…"); accept(await call("sync-account")); return; }
     if (el.dataset.openModel) { setStatus("正在打开 Codex…"); accept(await call("open-codex", [el.dataset.openModel])); return; }
     if (el.dataset.checkModel) { setStatus("正在检查连接…"); setStatus((await call("check", [el.dataset.checkModel])).message || "连接正常"); return; }
     if (el.dataset.probeModel) { setStatus("正在真实验证…"); accept(await call("probe", [el.dataset.probeModel])); return; }

@@ -314,11 +314,20 @@ struct ModelLibraryView: View {
             }
             Text("官方客户端只负责登录和续期。同步后，常用及所有新窗口都能在同一会话中切换官方登录模型和普通 API。")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Image(systemName: library.officialAccount.signedIn ? "person.crop.circle.badge.checkmark" : "person.crop.circle.badge.exclamationmark")
+                Text(library.officialAccount.label).lineLimit(1)
+                if library.officialAccount.expired == true { Text("已过期").foregroundStyle(.red) }
+            }
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(library.officialAccount.signedIn ? .blue : .orange)
             Text("工作请进入下方可切换窗口；无需退出 ChatGPT 账号")
                 .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             HStack(spacing: 8) {
                 Button("登录 / 续期") { Task { await library.openCodex("official") } }
+                    .controlSize(.small).disabled(library.busy)
+                Button("同步账号") { Task { await library.syncAccount() } }
                     .controlSize(.small).disabled(library.busy)
                 Button("同步并打开可切换窗口") { Task { await library.syncOfficialModels(openWorkWindow: true) } }
                     .buttonStyle(.borderedProminent).controlSize(.small).disabled(library.busy)
@@ -454,31 +463,54 @@ struct ModelLibraryView: View {
     }
 
     private var statusBar: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "internaldrive").foregroundStyle(.secondary).font(.caption)
-            if let disk = library.disk {
-                Text("助手目录 \(humanBytes(disk.totalBytes)) · 可回收 \(humanBytes(disk.reclaimable)) · 系统剩余 \(Int(disk.freeDiskPercent.rounded()))%")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let snapshots = disk.localSnapshots, snapshots > 0 {
-                    Text("· \(snapshots) 个本地快照钉着空间").font(.caption).foregroundStyle(.orange)
-                        .help("清理出来的空间会被本地 Time Machine 快照钉住，删掉快照才会真正释放")
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Image(systemName: library.officialAccount.signedIn ? "person.crop.circle.fill.badge.checkmark" : "person.crop.circle.badge.exclamationmark")
+                    .foregroundStyle(library.officialAccount.signedIn ? .blue : .orange).font(.caption)
+                Text(library.officialAccount.label).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Button("更换账号") { Task { await library.openCodex("official") } }
+                    .controlSize(.small).disabled(library.busy)
+                Button("同步账号") { Task { await library.syncAccount() } }
+                    .controlSize(.small).disabled(library.busy)
+                Divider().frame(height: 16)
+                if let route = library.recentRoutes.first {
+                    Image(systemName: route.confirmed == true ? "checkmark.shield.fill" : (route.status == "failed" ? "xmark.shield.fill" : "clock.badge.exclamationmark"))
+                        .foregroundStyle(route.confirmed == true ? .green : (route.status == "failed" ? .red : .orange))
+                        .font(.caption)
+                    Text(route.confirmed == true
+                         ? "已确认：\(route.name ?? route.route) · \(route.requestedModel ?? route.model ?? "?") → \(route.host)"
+                         : "\(route.status == "failed" ? "失败" : "未确认")：\(route.name ?? route.route) · \(route.requestedModel ?? route.model ?? "?")")
+                        .font(.caption).foregroundStyle(route.confirmed == true ? .green : (route.status == "failed" ? .red : .orange)).lineLimit(1)
+                        .help("只有“已确认”表示对应上游成功完成请求；模型自己的文字自述不作为切换证据。")
                 }
-            } else {
-                Text("点「检查占用」算出可回收多少").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                if library.busy { ProgressView().controlSize(.small) }
+                Text(library.message).font(.caption).foregroundStyle(library.success == false ? .red : .secondary).lineLimit(1)
             }
-            if let summary = recentHostSummary {
-                Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    .help("最近几次请求实际打到的上游域名。想核对扣费方，看这一行。")
+            HStack(spacing: 10) {
+                Image(systemName: "internaldrive").foregroundStyle(.secondary).font(.caption)
+                if let disk = library.disk {
+                    Text("助手目录 \(humanBytes(disk.totalBytes)) · 可回收 \(humanBytes(disk.reclaimable)) · 系统剩余 \(Int(disk.freeDiskPercent.rounded()))%")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let snapshots = disk.localSnapshots, snapshots > 0 {
+                        Text("· \(snapshots) 个本地快照钉着空间").font(.caption).foregroundStyle(.orange)
+                            .help("清理出来的空间会被本地 Time Machine 快照钉住，删掉快照才会真正释放")
+                    }
+                } else {
+                    Text("点「检查占用」算出可回收多少").font(.caption).foregroundStyle(.secondary)
+                }
+                if let summary = recentHostSummary {
+                    Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        .help("今天请求实际打到的上游域名。想核对扣费方，看这一行。")
+                }
+                Spacer()
+                Button("检查占用") { Task { await library.refreshDisk() } }.controlSize(.small).disabled(library.busy)
+                Button("清理") { library.showCleanupConfirm = true }.controlSize(.small)
+                    .disabled(library.busy || (library.disk?.reclaimable ?? 0) <= 0)
+                    .help("删除各窗口里重复的会话副本与浏览器缓存；官方库和窗口独有对话不动")
             }
-            if library.busy { ProgressView().controlSize(.small) }
-            Spacer()
-            Text(library.message).font(.caption).foregroundStyle(library.success == false ? .red : .secondary).lineLimit(1)
-            Button("检查占用") { Task { await library.refreshDisk() } }.controlSize(.small).disabled(library.busy)
-            Button("清理") { library.showCleanupConfirm = true }.controlSize(.small)
-                .disabled(library.busy || (library.disk?.reclaimable ?? 0) <= 0)
-                .help("删除各窗口里重复的会话副本与浏览器缓存；官方库和窗口独有对话不动")
         }
-        .padding(.horizontal, 18).padding(.vertical, 10)
+        .padding(.horizontal, 18).padding(.vertical, 8)
     }
 
     // 模型配置收进一个弹窗：主界面不再被模型列表挤掉一半。
@@ -564,10 +596,14 @@ struct ModelLibraryView: View {
                 ForEach(library.recentRoutes) { entry in
                     HStack(spacing: 10) {
                         Text(entry.at.suffix(15).prefix(8)).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                        Text(entry.confirmed == true ? "已确认" : (entry.status == "failed" ? "失败" : "未确认"))
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(entry.confirmed == true ? .green : (entry.status == "failed" ? .red : .orange))
                         Text(entry.host).font(.system(size: 11, design: .monospaced))
                         if entry.fallback == true { Text("备用").font(.system(size: 10, weight: .bold)).foregroundStyle(.orange) }
                         Spacer()
-                        Text(entry.name ?? entry.route).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                        Text("\(entry.name ?? entry.route) · \(entry.requestedModel ?? entry.model ?? "?")")
+                            .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
             }

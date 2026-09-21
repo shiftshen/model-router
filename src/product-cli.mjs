@@ -294,6 +294,15 @@ async function main() {
     return { ok: true, update, message: update.available ? (update.prepared ? `新版本 ${update.latestVersion} 已下载，准备安装` : update.message) : update.message };
   }
   if (command === "sync-official-models") return service.syncOfficialModels();
+  if (command === "sync-account") {
+    const synced = await service.syncOfficialAuthHomes();
+    return {
+      ...(await service.switchSummary()),
+      message: synced.account.signedIn
+        ? `官方账号已同步到 ${synced.updated.length} 个工作窗口`
+        : "当前没有可同步的官方 ChatGPT 登录，请先在官方客户端登录",
+    };
+  }
   if (command === "prepare") return service.prepare(id);
   if (command === "diagnostics") return service.diagnostics();
   if (command === "export") return { exportData: JSON.stringify(await store.read(), null, 2), message: "导出不包含 API Key 和登录凭据" };

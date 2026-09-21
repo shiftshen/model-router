@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { ModelStore } from "../src/model-store.mjs";
-import { createGateway, noteFallback, noteRoute } from "../src/model-gateway.mjs";
+import { confirmRoute, createGateway, noteFallback, noteRoute } from "../src/model-gateway.mjs";
 import { ProductService, readFallbackEvents, readRecentRoutes, readUsageReport } from "../src/product-service.mjs";
 
 // 这一组测试是为了钉住一个真实踩过的坑：
@@ -19,8 +19,8 @@ async function fixture(context) {
   return new ModelStore(root);
 }
 
-// 网关是先回响应、再把「走了谁」写进文件（写盘不该压在请求延迟上），
-// 所以客户端拿到响应时记录可能还没落盘——测试要等一下，不能立刻断言。
+// 直接调用 noteRoute 的测试仍允许等待异步文件系统抖动；真实网关请求另有测试锁定：
+// 客户端看到响应完成时，对应路由必须已经确认并落盘。
 async function waitFor(check, { timeout = 2000, step = 20 } = {}) {
   const deadline = Date.now() + timeout;
   for (;;) {
@@ -53,6 +53,17 @@ test("noteRoute / noteFallback 真的把记录写进磁盘（不是只有返回�
   assert.equal(fallbacks[0].fromName, "A");
   assert.equal(fallbacks[0].toName, "B");
   assert.equal(fallbacks[0].sessionId, "thread-123", "fallback 事件必须能追到具体 thread");
+});
+
+test("路由审计写不进磁盘时必须阻止调用，不能吞错后继续花费", async (context) => {
+  const store = await fixture(context);
+  const blocker = path.join(store.root, "not-a-directory");
+  await fs.writeFile(blocker, "x");
+  await assert.rejects(
+    noteRoute(blocker, { id: "paid", name: "付费模型", endpoint: "https://provider.example/v1", protocol: "responses" }, { model: "expensive" }),
+    /ENOTDIR|not a directory/i,
+  );
+  await assert.rejects(confirmRoute(store.root, "missing-request"), /路由确认记录丢失/);
 });
 
 test("读回来的是同一批（读接口不能自己 catch 成空数组掩盖问题）", async (context) => {
@@ -114,9 +125,13 @@ test("首选失败改用备用时，两个文件都要留下证据，界面才�
   assert.equal(routes.length, 2);
   assert.equal(routes[0].route, "backup");
   assert.equal(routes[0].fallback, true);
+  assert.equal(routes[0].status, "completed");
+  assert.equal(routes[0].confirmed, true);
   assert.equal(routes[0].sessionId, "thread-fallback-1");
   assert.equal(routes[1].route, "primary");
   assert.equal(routes[1].fallback, false);
+  assert.equal(routes[1].status, "failed");
+  assert.equal(routes[1].confirmed, false);
   assert.equal(routes[1].sessionId, "thread-fallback-1");
 
   // 界面拿到的就是这两份数据

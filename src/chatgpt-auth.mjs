@@ -19,6 +19,36 @@ export function tokenExpiry(token) {
   catch { return 0; }
 }
 
+function tokenClaims(token) {
+  try { return JSON.parse(Buffer.from(String(token).split(".")[1], "base64url").toString()); }
+  catch { return {}; }
+}
+
+// 只向产品界面暴露账号标识，不返回任何 access/refresh/id token。
+// 工作窗口和网关都复用 ~/.codex/auth.json；这里显示的就是官方请求实际使用的账号。
+export function accountSummary(auth, { now = Date.now() } = {}) {
+  const tokens = auth?.tokens ?? {};
+  const access = tokenClaims(tokens.access_token);
+  const identity = tokenClaims(tokens.id_token);
+  const profile = access["https://api.openai.com/profile"] ?? {};
+  const accountID = String(tokens.account_id ?? "").trim();
+  const expiry = tokenExpiry(tokens.access_token) || tokenExpiry(tokens.id_token);
+  const signedIn = auth?.auth_mode === "chatgpt" && Boolean(tokens.access_token && accountID);
+  return {
+    signedIn,
+    name: String(identity.name ?? access.name ?? profile.name ?? "").trim(),
+    email: String(identity.email ?? access.email ?? profile.email ?? "").trim(),
+    accountSuffix: accountID ? accountID.slice(-8) : "",
+    expiresAt: expiry ? new Date(expiry).toISOString() : "",
+    expired: Boolean(expiry && expiry <= now),
+  };
+}
+
+export async function officialAccount({ file = authPath, now = Date.now() } = {}) {
+  try { return accountSummary(JSON.parse(await fs.readFile(file, "utf8")), { now }); }
+  catch { return { signedIn: false, name: "", email: "", accountSuffix: "", expiresAt: "", expired: false }; }
+}
+
 export async function officialTokens({ file = authPath, now = Date.now() } = {}) {
   // Codex owns refresh-token rotation. A proxy must not race it or overwrite auth.json.
   let auth;

@@ -6,7 +6,6 @@ import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ModelStore } from "./model-store.mjs";
@@ -188,6 +187,7 @@ export async function compactForWindow({ store, route, payload, limit, signal, k
   const transcript = transcriptOf(head);
   const summarizer = await pickSummarizer(store, route, Math.round(transcript.length / 3.2));
   let summary = "";
+  let summaryAudit = null;
   try {
     const key = await store.secret(summarizer.credentialID);
     const request = summaryRequest(transcript, summarizer.model);
@@ -203,15 +203,17 @@ export async function compactForWindow({ store, route, payload, limit, signal, k
     }
     // 摘要请求同样会真花钱，而且带着整段历史（上下文最大的请求）。
     // 它绕过了上面那个路由候选循环，所以必须单独记一笔——否则「今天请求都去了谁」是漏的。
-    await noteRoute(store.root, summarizer, { model: summarizer.model, kind: "summary", sessionId });
+    summaryAudit = await noteRoute(store.root, summarizer, { model: summarizer.model, kind: "summary", sessionId });
     const result = summarizer.protocol === "chatgpt"
       ? await officialUpstream(summarizer, request, signal, 120000)
       : await upstream(summarizer, key, suffix, summaryBody, 120000, signal, sessionId);
     const body = summarizer.protocol === "chatgpt" ? await officialResponseJSON(result) : await limitedJSON(result.body, responseLimitBytes);
+    await confirmRoute(store.root, summaryAudit.requestId, { observedModel: body?.model || "", protocol: summarizer.protocol });
     if (summarizer.protocol === "chat") summary = String(body?.choices?.[0]?.message?.content ?? "").trim();
     else if (summarizer.protocol === "anthropic") summary = extractSummary({ output: (body?.content ?? []).map((part) => ({ type: "message", content: [part] })) });
     else summary = extractSummary(body);
-  } catch {
+  } catch (error) {
+    if (summaryAudit) await failRoute(store.root, summaryAudit.requestId, { protocol: summarizer.protocol, error: errorMessage(error) });
     // 摘要调不通也要让对话能继续：退回「列出被裁掉的用户消息」，并把这件事如实写在提示里。
     summary = "";
   }
@@ -258,42 +260,106 @@ function isOpencodeEndpoint(endpoint) {
 // 每个请求实际走了哪个上游，都要留一条记录。
 // 用户问「我的钱到底花在谁那儿」时，靠推理和日志都太绕——这条记录是直接答案：
 // 最近 N 次请求分别打到了哪个域名、用的哪个条目。
+let routeAuditQueue = Promise.resolve();
+function serializeRouteAudit(operation) {
+  const next = routeAuditQueue.then(operation, operation);
+  routeAuditQueue = next.catch(() => {});
+  return next;
+}
+
+function auditDay(value = new Date()) {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+}
+
+async function updateAuditUsage(root, entry, phase) {
+  const file = path.join(root, "usage-by-day.json");
+  let data = {};
+  try { data = JSON.parse(await fsPromises.readFile(file, "utf8")); } catch { }
+  if (!data || typeof data !== "object" || Array.isArray(data)) data = {};
+  const day = auditDay(new Date(entry.at));
+  const bucket = data[day] && typeof data[day] === "object" ? data[day] : {};
+  for (const field of ["hosts", "fallbacks", "summaries", "confirmed", "failed"]) bucket[field] = { ...(bucket[field] || {}) };
+  const key = entry.host || "(无域名)";
+  if (phase === "started") {
+    bucket.hosts[key] = (bucket.hosts[key] || 0) + 1;
+    if (entry.fallback) bucket.fallbacks[key] = (bucket.fallbacks[key] || 0) + 1;
+    if (entry.kind === "summary") bucket.summaries[key] = (bucket.summaries[key] || 0) + 1;
+  } else if (phase === "completed") {
+    bucket.confirmed[key] = (bucket.confirmed[key] || 0) + 1;
+  } else if (phase === "failed") {
+    bucket.failed[key] = (bucket.failed[key] || 0) + 1;
+  }
+  data[day] = bucket;
+  const days = Object.keys(data).sort();
+  for (const stale of days.slice(0, Math.max(0, days.length - 60))) delete data[stale];
+  await fsPromises.writeFile(file, JSON.stringify(data, null, 2), { mode: 0o600 });
+}
+
+// started 表示请求确实发出（可能已经计费）；只有 completed 才能证明模型切换成功。
 export async function noteRoute(root, route, { model = "", fallback = false, kind = "request", sessionId = "" } = {}) {
   let host = "";
   try { host = new URL(route.endpoint).hostname; } catch { host = route.endpoint || ""; }
-  const entry = { at: new Date().toISOString(), route: route.id, name: route.name, host, model, fallback, kind, sessionId: String(sessionId ?? "").trim() };
-  try {
+  const entry = {
+    requestId: randomUUID(),
+    at: new Date().toISOString(),
+    route: route.id,
+    name: route.name,
+    host,
+    model,
+    requestedModel: model,
+    observedModel: "",
+    protocol: route.protocol || "",
+    fallback,
+    kind,
+    sessionId: String(sessionId ?? "").trim(),
+    status: "started",
+    confirmed: false,
+  };
+  await serializeRouteAudit(async () => {
     const file = path.join(root, "route-log.json");
     let list = [];
     try { list = JSON.parse(await fsPromises.readFile(file, "utf8")); } catch { }
     if (!Array.isArray(list)) list = [];
     list.push(entry);
     await fsPromises.writeFile(file, JSON.stringify(list.slice(-100), null, 2), { mode: 0o600 });
-  } catch { }
-  // 滚动 100 条盖不住「今天我的请求都去了谁」——那才是用户对账时要的。
-  // 所以另存一份按天累计的计数：{ "2026-09-19": { hosts: {...}, fallbacks: {...} } }
-  try {
-    const file = path.join(root, "usage-by-day.json");
-    let data = {};
-    try { data = JSON.parse(await fsPromises.readFile(file, "utf8")); } catch { }
-    if (!data || typeof data !== "object" || Array.isArray(data)) data = {};
-    const now = new Date();
-    const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-    const bucket = data[day] && typeof data[day] === "object" ? data[day] : { hosts: {}, fallbacks: {}, summaries: {} };
-    bucket.hosts = { ...(bucket.hosts || {}) };
-    bucket.fallbacks = { ...(bucket.fallbacks || {}) };
-    bucket.summaries = { ...(bucket.summaries || {}) };
-    const key = host || "(无域名)";
-    bucket.hosts[key] = (bucket.hosts[key] || 0) + 1;
-    if (fallback) bucket.fallbacks[key] = (bucket.fallbacks[key] || 0) + 1;
-    if (kind === "summary") bucket.summaries[key] = (bucket.summaries[key] || 0) + 1;
-    data[day] = bucket;
-    // 只留最近 60 天，避免无限长
-    const days = Object.keys(data).sort();
-    for (const stale of days.slice(0, Math.max(0, days.length - 60))) delete data[stale];
-    await fsPromises.writeFile(file, JSON.stringify(data, null, 2), { mode: 0o600 });
-  } catch { }
+    try { await updateAuditUsage(root, entry, "started"); } catch { }
+  });
   return entry;
+}
+
+async function settleRoute(root, requestId, status, { observedModel = "", protocol = "", error = "" } = {}) {
+  return serializeRouteAudit(async () => {
+    const file = path.join(root, "route-log.json");
+    let list = [];
+    try { list = JSON.parse(await fsPromises.readFile(file, "utf8")); } catch { }
+    if (!Array.isArray(list)) list = [];
+    const index = list.findIndex((entry) => entry.requestId === requestId);
+    if (index < 0) return null;
+    if (list[index].status !== "started") return list[index].status === status ? list[index] : null;
+    const entry = {
+      ...list[index],
+      completedAt: new Date().toISOString(),
+      status,
+      confirmed: status === "completed",
+      observedModel: String(observedModel || "").trim(),
+      protocol: String(protocol || list[index].protocol || "").trim(),
+      error: status === "failed" ? redactDetail(error) : "",
+    };
+    list[index] = entry;
+    await fsPromises.writeFile(file, JSON.stringify(list.slice(-100), null, 2), { mode: 0o600 });
+    try { await updateAuditUsage(root, entry, status); } catch { }
+    return entry;
+  });
+}
+
+export async function confirmRoute(root, requestId, details = {}) {
+  const entry = await settleRoute(root, requestId, "completed", details);
+  if (!entry) throw new Error("路由确认记录丢失，已拒绝把本次调用标记为成功");
+  return entry;
+}
+
+export function failRoute(root, requestId, details = {}) {
+  return settleRoute(root, requestId, "failed", details);
 }
 
 export async function noteFallback(root, from, to, reason, { sessionId = "" } = {}) {
@@ -360,6 +426,59 @@ export async function officialUpstream(route, payload, signal, timeout = 3600000
     throw error;
   }
   return response;
+}
+
+function modelFromWire(text) {
+  for (const raw of String(text ?? "").split(/\r?\n/)) {
+    const line = raw.trim().replace(/^data:\s*/, "");
+    if (!line || line === "[DONE]") continue;
+    try {
+      const value = JSON.parse(line);
+      const model = value?.response?.model ?? value?.model;
+      if (typeof model === "string" && model.trim()) return model.trim();
+    } catch { }
+  }
+  return "";
+}
+
+function wireModelCapture(limit = 512 * 1024) {
+  const chunks = [];
+  let length = 0;
+  const add = (chunk) => {
+    if (length >= limit) return;
+    const value = Buffer.from(chunk);
+    const remaining = limit - length;
+    chunks.push(value.subarray(0, remaining));
+    length += Math.min(value.length, remaining);
+  };
+  return {
+    add,
+    model: () => modelFromWire(Buffer.concat(chunks).toString("utf8")),
+  };
+}
+
+function waitForResponseDrain(response) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      response.off("drain", drained);
+      response.off("close", closed);
+      response.off("error", failed);
+    };
+    const drained = () => { cleanup(); resolve(); };
+    const closed = () => { cleanup(); reject(new Error("客户端已断开")); };
+    const failed = (error) => { cleanup(); reject(error); };
+    response.once("drain", drained);
+    response.once("close", closed);
+    response.once("error", failed);
+  });
+}
+
+async function forwardCapturedBody(body, response, capture) {
+  for await (const chunk of Readable.fromWeb(body)) {
+    if (response.destroyed || response.writableEnded) throw new Error("客户端已断开");
+    capture.add(chunk);
+    if (!response.write(chunk)) await waitForResponseDrain(response);
+  }
 }
 
 function sendJSON(response, status, body) {
@@ -578,11 +697,9 @@ export function createGateway(store = new ModelStore(), options = {}) {
       for (const candidate of candidates) {
         const target = candidate.route;
         const targetKey = candidate.key ?? (await store.secret(target.credentialID));
-        // 「这次请求要打给谁」写在真正发起调用之前。
-        // 放在响应之后写会有两个毛病：一是客户端拿到响应时记录可能还没落盘（测试与界面都会读到空），
-        // 二是中途失败就什么都不留下——而用户核对扣费方，靠的正是这条记录。
+        // started 先证明请求确实发出；完成后再原位改为 completed，不能把“尝试过”冒充“切换成功”。
         if (candidateIndex > 0) await noteFallback(store.root, route, target, errorMessage(lastError ?? new Error("首选条目不可用")), { sessionId: payload.session_id });
-        await noteRoute(store.root, target, { model: target.model, fallback: candidateIndex > 0, sessionId: payload.session_id });
+        const routeAudit = await noteRoute(store.root, target, { model: target.model, fallback: candidateIndex > 0, sessionId: payload.session_id });
         // 从真正发起请求就开始计时：供应商连响应头都不给的情况同样会断开并转备用。
         const callSignal = attemptSignal();
         const attempts = protocolChain(target.protocol);
@@ -590,18 +707,25 @@ export function createGateway(store = new ModelStore(), options = {}) {
           const attempt = attempts[index];
           const targetPayload = payloadForRoute(payload, target);
           try {
+            let observedModel = "";
             if (attempt === "chatgpt") {
               const result = await (options.officialUpstream || officialUpstream)({ ...target, protocol: attempt }, { ...targetPayload, model: target.model }, callSignal);
               if (payload.stream && !response.headersSent) response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
               armIdle();
               if (!payload.stream) {
                 const body = await officialResponseJSON(result);
+                observedModel = body?.model || "";
+                await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
                 if (!response.headersSent) sendJSON(response, 200, body);
                 else response.end(JSON.stringify(body));
               } else {
                 sseStream = true;
                 eventsSent = true;
-                await pipeline(Readable.fromWeb(result.body), response);
+                const capture = wireModelCapture();
+                await forwardCapturedBody(result.body, response, capture);
+                observedModel = capture.model();
+                await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
+                response.end();
               }
               disarmIdle();
             } else if (attempt === "responses") {
@@ -613,7 +737,11 @@ export function createGateway(store = new ModelStore(), options = {}) {
               if ((result.headers.get("content-type") || "").includes("text/event-stream")) sseStream = true;
               armIdle();
               eventsSent = true;
-              await pipeline(Readable.fromWeb(result.body), response);
+              const capture = wireModelCapture();
+              await forwardCapturedBody(result.body, response, capture);
+              observedModel = capture.model();
+              await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
+              response.end();
               disarmIdle();
             } else {
               if (payload.stream && !response.headersSent) {
@@ -627,9 +755,17 @@ export function createGateway(store = new ModelStore(), options = {}) {
               const result = await upstream({ ...target, protocol: attempt }, targetKey, path, attempt === "anthropic" ? toAnthropic(body, { stream: Boolean(payload.stream) }) : body, 3600000, callSignal, payload.session_id);
               if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
               armIdle();
-              if (!payload.stream) sendJSON(response, 200, fromCompletion(await limitedJSON(result.body), definitions, attempt, target.model));
+              if (!payload.stream) {
+                const completion = await limitedJSON(result.body);
+                observedModel = completion?.model || "";
+                await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
+                sendJSON(response, 200, fromCompletion(completion, definitions, attempt, target.model));
+              }
               else if (!(result.headers.get("content-type") || "").includes("text/event-stream")) {
-                response.end(responseEvents(fromCompletion(await limitedJSON(result.body), definitions, attempt, target.model)));
+                const completion = await limitedJSON(result.body);
+                observedModel = completion?.model || "";
+                await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
+                response.end(responseEvents(fromCompletion(completion, definitions, attempt, target.model)));
               } else {
                 const stream = createResponseStream({ model: target.model, send: (chunk) => response.write(chunk) });
                 stream.created();
@@ -641,23 +777,34 @@ export function createGateway(store = new ModelStore(), options = {}) {
                   else if (event.type === "usage") stream.setUsage(event.usage);
                 });
                 const decoder = new TextDecoder();
+                const capture = wireModelCapture();
                 armIdle();
                 for await (const chunk of Readable.fromWeb(result.body)) {
                   armIdle();
+                  capture.add(chunk);
                   parse(decoder.decode(chunk, { stream: true }));
                 }
+                observedModel = capture.model();
                 disarmIdle();
                 stream.finish({ definitions });
+                await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
                 response.end();
               }
             }
+            await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
             served = true;
             break;
           } catch (error) {
             lastError = error;
-            if (abort.signal.aborted) throw error;
+            if (abort.signal.aborted) {
+              await failRoute(store.root, routeAudit.requestId, { protocol: attempt, error: errorMessage(error) });
+              throw error;
+            }
             // 已经发出正文增量就不能再换供应商，否则客户端会收到两段拼接内容。
-            if (eventsSent) throw error;
+            if (eventsSent) {
+              await failRoute(store.root, routeAudit.requestId, { protocol: attempt, error: errorMessage(error) });
+              throw error;
+            }
             const wrongEndpoint = [404, 405].includes(error.status);
             if (wrongEndpoint && index < attempts.length - 1) {
               clearInterval(heartbeat);
@@ -692,6 +839,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
         if (served) {
           break;
         }
+        await failRoute(store.root, routeAudit.requestId, { error: errorMessage(lastError ?? new Error("上游没有成功响应")) });
         candidateIndex += 1;
       }
       if (!served) throw lastError || new Error("模型调用失败");

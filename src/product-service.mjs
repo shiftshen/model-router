@@ -12,7 +12,7 @@ import { readDiskPolicy } from "./disk-policy.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
 import { buildRouterTable, modelInfo, routerCatalog, routerID, routerProviderID, routerTableEntry } from "./router.mjs";
 import { resolveRuntimeProfile } from "./runtime-profile.mjs";
-import { officialModels, officialTokens } from "./chatgpt-auth.mjs";
+import { officialAccount, officialModels, officialTokens } from "./chatgpt-auth.mjs";
 export { resolveRuntimeProfile } from "./runtime-profile.mjs";
 import {
   allocateWindow,
@@ -52,7 +52,7 @@ import {
 } from "./platform-runtime.mjs";
 
 const sharedHome = path.join(os.homedir(), ".codex");
-const sharedRuntimeAssets = Object.freeze(["auth.json", "AGENTS.md", "skills", "plugins", "requirements.toml", "hooks.json"]);
+const sharedRuntimeAssets = Object.freeze(["AGENTS.md", "skills", "plugins", "requirements.toml", "hooks.json"]);
 const liteBlockedRuntimeAssets = Object.freeze(["skills", "plugins", "requirements.toml", "hooks.json"]);
 const liteAgentsText = `# Model Router Lite\n- 简单问题直接回答，不扫描无关项目。\n- 代码任务只读必要文件，做最小修改并运行相关检查。\n- 默认只使用 Codex 核心文件/终端/编辑能力；不要主动依赖 Plugins、MCP、Skills 或子智能体。\n- 需要完整工具生态时，把该模型的“Codex 环境”改为 Full。\n`;
 const execFileAsync = promisify(execFile);
@@ -237,7 +237,11 @@ export async function readUsageReport(root, days = 1) {
       hosts: data[day]?.hosts ?? {},
       fallbacks: data[day]?.fallbacks ?? {},
       summaries: data[day]?.summaries ?? {},
+      confirmed: data[day]?.confirmed ?? {},
+      failed: data[day]?.failed ?? {},
       total: Object.values(data[day]?.hosts ?? {}).reduce((sum, n) => sum + Number(n || 0), 0),
+      confirmedTotal: Object.values(data[day]?.confirmed ?? {}).reduce((sum, n) => sum + Number(n || 0), 0),
+      failedTotal: Object.values(data[day]?.failed ?? {}).reduce((sum, n) => sum + Number(n || 0), 0),
     }));
   } catch {
     return [];
@@ -251,14 +255,50 @@ export class ProductService {
     this.officialHome = sharedHome;
     this.openOfficialDesktop = openOfficialChatGPTDesktop;
   }
+  async syncOfficialAuthAsset(homePath) {
+    const source = path.join(this.officialHome, "auth.json");
+    const destination = path.join(homePath, "auth.json");
+    await fs.access(source);
+    await fs.mkdir(homePath, { recursive: true, mode: 0o700 });
+    const temporary = path.join(homePath, `.auth-${randomUUID()}.tmp`);
+    try {
+      if (isWindows) await fs.copyFile(source, temporary);
+      else await fs.symlink(source, temporary, "file");
+      try {
+        await fs.rename(temporary, destination);
+      } catch (error) {
+        if (!["EEXIST", "EPERM", "EACCES"].includes(error.code)) throw error;
+        await removeManagedAsset(destination);
+        await fs.rename(temporary, destination);
+      }
+    } finally {
+      await fs.rm(temporary, { force: true });
+    }
+  }
+  async syncOfficialAuthHomes() {
+    const account = await officialAccount({ file: path.join(this.officialHome, "auth.json") });
+    if (!account.signedIn) return { account, updated: [] };
+    const registry = await readWindowRegistry(this.store.root);
+    const updated = [];
+    for (const entry of registry.windows) {
+      const homePath = windowPaths(this.store.root, entry.id).homePath;
+      try {
+        await fs.access(homePath);
+        await this.syncOfficialAuthAsset(homePath);
+        updated.push(entry.id);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+    return { account, updated };
+  }
   async syncSharedRuntimeAssets(homePath, runtimeProfile = "full") {
+    try { await this.syncOfficialAuthAsset(homePath); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
     if (runtimeProfile === "lite") {
       for (const name of liteBlockedRuntimeAssets) await removeManagedAsset(path.join(homePath, name));
       await removeManagedAsset(path.join(homePath, "AGENTS.md"));
       await fs.writeFile(path.join(homePath, "AGENTS.md"), liteAgentsText, { mode: 0o600 });
-      const auth = path.join(this.officialHome, "auth.json");
-      try { await fs.access(auth); await linkSharedAsset(auth, path.join(homePath, "auth.json")); }
-      catch (error) { if (!["ENOENT", "EEXIST"].includes(error.code)) throw error; }
       return;
     }
     try {
@@ -454,8 +494,13 @@ export class ProductService {
       }
       return library;
     });
+    const authSync = await this.syncOfficialAuthHomes();
     await this.refreshCatalogs();
-    return { ...(await this.store.publicData()), message: "已同步 " + models.length + " 个官方登录模型。重开工作窗口后，在每个会话的模型菜单中切换；无需退出账号。" };
+    return {
+      ...(await this.store.publicData()),
+      ...(await this.switchSummary()),
+      message: "已同步 " + models.length + " 个官方登录模型和账号状态（" + authSync.updated.length + " 个工作窗口）。在每个会话的模型菜单中切换；无需退出账号。",
+    };
   }
   async discover(route) {
     const checked = validateRoute(route);
@@ -857,6 +902,7 @@ export class ProductService {
       fallbacks: await readFallbackEvents(this.store.root),
       recentRoutes: await readRecentRoutes(this.store.root),
       todayUsage: (await readUsageReport(this.store.root, 1)).at(-1) ?? null,
+      officialAccount: await officialAccount({ file: path.join(this.officialHome, "auth.json") }),
       switchModels: table.map(({ slug, route }) => ({ id: route.id, slug, name: route.name, model: route.model, vendor: route.vendor, protocol: route.protocol })),
       unmanaged: await this.unmanagedWindows(),
       windows: await Promise.all(registry.windows.map(async (entry) => ({

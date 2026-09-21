@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { portableHistory } from "../src/portable-history.mjs";
-import { officialPayload, officialTokens, officialResponseJSON } from "../src/chatgpt-auth.mjs";
+import { accountSummary, officialAccount, officialPayload, officialTokens, officialResponseJSON } from "../src/chatgpt-auth.mjs";
 import { ModelStore, validateRoute } from "../src/model-store.mjs";
 import { buildRouterTable } from "../src/router.mjs";
 import { createGateway } from "../src/model-gateway.mjs";
@@ -46,6 +46,16 @@ test("official auth is read-only and an expired login does not rotate the deskto
  await assert.rejects(officialTokens({file,now:101000}),/官方登录已过期/);
  assert.equal(await fs.readFile(file,"utf8"),text);
 });
+test("official account status exposes identity without exposing credentials",async t=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),"hybrid-account-"));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+ const file=path.join(dir,"auth.json");
+ const jwt=value=>"x."+Buffer.from(JSON.stringify(value)).toString("base64url")+".x";
+ await fs.writeFile(file,JSON.stringify({auth_mode:"chatgpt",tokens:{access_token:jwt({exp:200}),id_token:jwt({email:"owner@example.com",name:"Owner",exp:200}),refresh_token:"SECRET",account_id:"account-12345678"}}));
+ const summary=await officialAccount({file,now:100000});
+ assert.deepEqual(summary,{signedIn:true,name:"Owner",email:"owner@example.com",accountSuffix:"12345678",expiresAt:"1970-01-01T00:03:20.000Z",expired:false});
+ assert.ok(!JSON.stringify(summary).includes("SECRET"));
+ assert.equal(accountSummary({auth_mode:"chatgpt",tokens:{}}).signedIn,false);
+});
 async function listen(server,t){await new Promise(r=>server.listen(0,"127.0.0.1",r));t.after(()=>new Promise(r=>{server.closeAllConnections();server.close(r)}));return "http://127.0.0.1:"+server.address().port;}
 test("router accepts official and third-party turns and recovers from official quota failure",async t=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),"hybrid-router-"));t.after(()=>fs.rm(root,{recursive:true,force:true}));
@@ -65,7 +75,7 @@ test("router accepts official and third-party turns and recovers from official q
    return new Response('data: '+JSON.stringify({type:"response.completed",response:{id:"official",object:"response",status:"completed",output:[]}})+'\n\n',{headers:{"content-type":"text/event-stream"}});
  }});
  const base=await listen(server,t),token=await store.token("router");
- const call=async model=>{const response=await fetch(base+"/router/v1/responses",{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json"},body:JSON.stringify({model,input:history,stream:false})});return {status:response.status,body:await response.json()};};
+ const call=async model=>{const response=await fetch(base+"/router/v1/responses",{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json"},body:JSON.stringify({model,input:history,stream:false,session_id:"same-thread-switch-proof"})});return {status:response.status,body:await response.json()};};
  assert.equal(buildRouterTable((await store.read()).routes).length,2);
  assert.equal((await call("official-model")).status,200);
  assert.equal((await call("third-model")).status,200);
@@ -78,7 +88,39 @@ test("router accepts official and third-party turns and recovers from official q
  fail=401;assert.notEqual((await call("official-model")).status,200);
  assert.equal((await call("third-model")).status,200);
  assert.equal(officialCalls,4);
+ const audit=JSON.parse(await fs.readFile(path.join(root,"route-log.json"),"utf8"));
+ assert.deepEqual(audit.map(x=>x.route),["chatgpt-test","third-test","chatgpt-test","chatgpt-test","third-test","chatgpt-test","third-test"]);
+ assert.deepEqual(audit.map(x=>x.status),["completed","completed","completed","failed","completed","failed","completed"]);
+ assert.ok(audit.every(x=>x.sessionId==="same-thread-switch-proof"));
+ assert.ok(audit.filter(x=>x.status==="completed").every(x=>x.confirmed===true));
+ assert.ok(audit.filter(x=>x.status==="failed").every(x=>x.confirmed===false));
 });
+test("stream EOF is not visible until the selected route is durably confirmed",async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),"hybrid-stream-audit-"));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const store=new ModelStore(root);const data=await store.read();
+  const official=validateRoute({id:"chatgpt-stream",name:"Official stream",protocol:"chatgpt",model:"official-stream-model",switchable:true});
+  await store.mutate(data.revision,d=>{d.routes=[official];return d});
+  const server=createGateway(store,{officialUpstream:async route=>new Response(new ReadableStream({
+    start(controller){
+      const bytes=new TextEncoder().encode('data: '+JSON.stringify({type:"response.completed",response:{id:"stream-proof",model:route.model,status:"completed",output:[]}})+'\n\n');
+      for(let index=0;index<bytes.length;index+=5)controller.enqueue(bytes.slice(index,index+5));
+      controller.close();
+    }
+  }),{headers:{"content-type":"text/event-stream"}})});
+  const base=await listen(server,t),token=await store.token("router");
+  const response=await fetch(base+"/router/v1/responses",{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json"},body:JSON.stringify({model:"official-stream-model",input:"stream-proof",stream:true,session_id:"stream-thread-proof"})});
+  assert.equal(response.status,200);
+  assert.match(await response.text(),/response.completed/);
+  const audit=JSON.parse(await fs.readFile(path.join(root,"route-log.json"),"utf8"));
+  assert.equal(audit.length,1,"客户端看到 EOF 时审计必须已经写完");
+  assert.equal(audit[0].status,"completed");
+  assert.equal(audit[0].confirmed,true);
+  assert.equal(audit[0].route,"chatgpt-stream");
+  assert.equal(audit[0].requestedModel,"official-stream-model");
+  assert.equal(audit[0].observedModel,"official-stream-model");
+  assert.equal(audit[0].sessionId,"stream-thread-proof");
+});
+
 test("official catalog sync is explicit and idempotent; standalone official entry stays independent",async t=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),"hybrid-sync-"));t.after(()=>fs.rm(root,{recursive:true,force:true}));
  const home=path.join(root,"official");await fs.mkdir(home);

@@ -24,7 +24,10 @@
 
   <main>
     <section class="status-card">
-      <div id="status" class="status">正在启动模型网关…</div>
+      <div>
+        <div id="status" class="status">正在启动模型网关…</div>
+        <div class="account-line"><span id="accountStatus" class="muted">官方账号：正在读取…</span><button data-official-open="1">更换账号</button><button data-account-sync="1">同步账号</button></div>
+      </div>
       <div id="usage" class="muted"></div>
     </section>
     <div id="fallbacks"></div>
