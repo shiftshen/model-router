@@ -1,0 +1,31 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { ModelStore } from "../src/model-store.mjs";
+import { ProductService } from "../src/product-service.mjs";
+import { buildRouterTable, routerCatalog } from "../src/router.mjs";
+import { sqliteSync } from "./test-platform.mjs";
+test("打开窗口只维护自己的项目分组，不从官方或其他窗口补入",async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),"isolated-window-"));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const store=new ModelStore(root);await store.read();const svc=new ProductService(store);
+ svc.startGateway=async()=>({});svc.runningWindows=async()=>new Map();svc.syncSharedRuntimeAssets=async()=>{};
+ const home=svc.switchPaths().homePath,other=path.join(root,"official");
+ await fs.mkdir(home,{recursive:true});await fs.mkdir(other,{recursive:true});
+ sqliteSync(path.join(home,"state_5.sqlite"),"CREATE TABLE threads(id TEXT PRIMARY KEY); INSERT INTO threads VALUES('shared-id');");
+ await fs.writeFile(path.join(home,".codex-global-state.json"),JSON.stringify({"local-projects":{}}));
+ await fs.writeFile(path.join(other,".codex-global-state.json"),JSON.stringify({"local-projects":{"foreign":{id:"foreign",name:"Official only",rootPaths:["/official-only"]}},"thread-project-assignments":{"shared-id":{projectId:"foreign"}}}));
+ const original=await fs.readFile(path.join(other,".codex-global-state.json"),"utf8");
+ svc.switchWindowSources=async()=>[other];
+ await svc.prepareSwitchWindow("deepseek-flash");
+ const actual=JSON.parse(await fs.readFile(path.join(home,".codex-global-state.json"),"utf8"));
+ assert.equal(actual["local-projects"]?.foreign,undefined);
+ assert.equal(await fs.readFile(path.join(other,".codex-global-state.json"),"utf8"),original);
+});
+test("旧会话别名拥有完整模型元数据且不重复占用模型菜单",()=>{
+ const table=buildRouterTable([{id:"a",name:"Coding Plan",protocol:"responses",model:"ark-code-latest",routerSlug:"ark-code-latest",routerAliases:["deepseek-v4-flash"]}]);
+ const models=routerCatalog(table).models;
+ assert.equal(models.length,2);assert.equal(models[1].slug,"deepseek-v4-flash");
+ assert.equal(models[1].display_name,"Coding Plan");assert.equal(models[1].visibility,"hide");
+});

@@ -79,5 +79,14 @@ export function modelInfo(route, slug) {
 }
 
 export function routerCatalog(table) {
-  return { models: table.map(({ slug, route }) => modelInfo(route, slug)) };
+  const models = table.map(({ slug, route }) => modelInfo(route, slug));
+  const seen = new Set(models.map(model => model.slug));
+  for (const { route } of table) {
+    for (const alias of route.routerAliases || []) {
+      if (seen.has(alias) || routerTableEntry(table, alias)?.route.id !== route.id) continue;
+      seen.add(alias);
+      models.push({ ...modelInfo(route, alias), visibility: "hide" });
+    }
+  }
+  return { models };
 }

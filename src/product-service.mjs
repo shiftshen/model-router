@@ -994,7 +994,7 @@ export class ProductService {
     try {
       // 只把「本窗口真有会话」的项目并进来：新窗口还没有任何对话时，
       // 否则侧边栏会列出一串点开空空的项目名（用户看到的就是「只剩项目名字」）。
-      globalState = await mergeGlobalProjectState(await this.switchWindowSources("all"), paths.homePath, { existingThreads: await readThreadIDs(paths.homePath) });
+      globalState = await mergeGlobalProjectState([paths.homePath], paths.homePath, { existingThreads: await readThreadIDs(paths.homePath) });
     } catch (error) {
       globalState = { destination: paths.homePath, error: error.message, wrote: false };
     }
@@ -1056,7 +1056,7 @@ export class ProductService {
       };
     }
     // 首次建立任务库的窗口才补历史；新建窗口按约定留空，需要时再手动导入。
-    const importHistory = Boolean(entry.legacy) && !fresh;
+    const importHistory = false; // History is imported only by an explicit user action.
     const prepared = await this.prepareWindow(id, initial, { importHistory });
     const pid = await this.spawnWindow(prepared);
     // 记住起始模型：只改这一个窗口，不动期间新建的其它窗口。
@@ -1230,7 +1230,6 @@ export class ProductService {
       for (const name of names.sort()) homes.push({ id: String(name), slot, home: path.join(this.store.root, slot, name, "codex-home") });
     }
     homes.push({ id: legacyWindowID, slot: "router-v1", home: windowPaths(this.store.root, legacyWindowID).homePath });
-    const sources = await this.switchWindowSources("all");
     const windows = [];
     let prunedProjects = 0;
     let prunedAssignments = 0;
@@ -1242,7 +1241,7 @@ export class ProductService {
         continue;
       }
       const existingThreads = await readThreadIDs(entry.home);
-      const result = await mergeGlobalProjectState(sources, entry.home, { existingThreads, dryRun });
+      const result = await mergeGlobalProjectState([entry.home], entry.home, { existingThreads, dryRun });
       prunedProjects += result.projectsPruned ?? 0;
       prunedAssignments += result.assignmentsPruned ?? 0;
       windows.push({
