@@ -71,6 +71,7 @@ export async function officialModels(home = path.dirname(authPath)) {
 export async function officialResponseJSON(response) {
   let buffer = "", bytes = 0;
   const decoder = new TextDecoder();
+  const completedItems = new Map();
   for await (const chunk of response.body) {
     bytes += chunk.length;
     if (bytes > 32 * 1024 * 1024) throw new Error("官方验证响应过大");
@@ -82,7 +83,8 @@ export async function officialResponseJSON(response) {
       const value = line.slice(5).trim();
       if (!value || value === "[DONE]") continue;
       const event = JSON.parse(value);
-      if (event.type === "response.completed") return event.response;
+      if (event.type === "response.output_item.done" && event.item) completedItems.set(event.output_index ?? completedItems.size, event.item);
+      if (event.type === "response.completed") return { ...event.response, output: event.response?.output?.length ? event.response.output : [...completedItems].sort((a,b) => a[0]-b[0]).map(([,item]) => item) };
       if (event.type === "response.failed" || event.type === "error") {
         const error = new Error(event.response?.error?.message || event.error?.message || event.message || "官方推理失败");
         error.status = event.response?.error?.code === "insufficient_quota" ? 429 : 502;

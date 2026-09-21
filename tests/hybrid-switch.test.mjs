@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { portableHistory } from "../src/portable-history.mjs";
-import { officialPayload, officialTokens } from "../src/chatgpt-auth.mjs";
+import { officialPayload, officialTokens, officialResponseJSON } from "../src/chatgpt-auth.mjs";
 import { ModelStore, validateRoute } from "../src/model-store.mjs";
 import { buildRouterTable } from "../src/router.mjs";
 import { createGateway } from "../src/model-gateway.mjs";
@@ -117,4 +117,13 @@ test("parallel conversations keep per-request models and cancellation does not s
  const response=await send("official-a","cancel",true);const reader=response.body.getReader();let received="";while(!received.includes("response.created")){const next=await reader.read();assert.equal(next.done,false);received+=new TextDecoder().decode(next.value);}await reader.cancel();
  for(let i=0;i<50&&!aborted;i++)await new Promise(r=>setTimeout(r,10));
  assert.equal(aborted,true);assert.equal(calls.length,3);
+});
+
+test("official stream collector retains completed message items when final response output is empty",async()=>{
+ const item={type:"message",role:"assistant",content:[{type:"output_text",text:"MODEL_ASSISTANT_OK"}]};
+ const events=[{type:"response.output_item.done",output_index:0,item},{type:"response.completed",response:{status:"completed",output:[]}}];
+ const bytes=new TextEncoder().encode(events.map(e=>"data: "+JSON.stringify(e)+"\n\n").join(""));
+ const stream=new ReadableStream({start(c){for(let i=0;i<bytes.length;i+=7)c.enqueue(bytes.slice(i,i+7));c.close();}});
+ const result=await officialResponseJSON(new Response(stream));
+ assert.deepEqual(result.output,[item]);
 });
