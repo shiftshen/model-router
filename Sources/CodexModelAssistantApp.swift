@@ -878,7 +878,7 @@ struct ModelLibraryView: View {
     private var discovery: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("选择供应商模型").font(.title2.bold())
-            Text("供应商当前返回 \(library.discovered.count) 个模型。保存后请执行真实验证。").font(.callout).foregroundStyle(.secondary)
+            Text("共 \(library.discovered.count) 个候选（含当前模型）。可在编辑配置中手动输入模型 ID；目录不代表套餐支持，实际可用性以真实验证为准。").font(.callout).foregroundStyle(.secondary)
             TextField("筛选模型 ID", text: $library.discoveryFilter).textFieldStyle(.roundedBorder)
             List(library.discovered.filter { library.discoveryFilter.isEmpty || $0.localizedCaseInsensitiveContains(library.discoveryFilter) }, id: \.self) { id in
                 Button {

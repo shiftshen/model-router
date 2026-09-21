@@ -47,7 +47,7 @@ struct ModelEditor: View {
                         ForEach(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini"], id: \.self) { model in Text(model).tag(model) }
                     }
                 } else {
-                    TextField("模型 ID", text: $draft.model, prompt: Text("可先保存，再使用「发现模型」选择"))
+                    TextField("模型 ID", text: $draft.model, prompt: Text("可手动输入，也可保存后发现模型"))
                 }
                 if draft.protocol != "oauth" {
                     TextField("API 地址", text: $draft.endpoint)

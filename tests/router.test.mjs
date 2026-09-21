@@ -392,6 +392,7 @@ test("自动识别接口会挑出真正可用的那一套并保存", async (cont
 
 test("已有条目的窗口可以改成可切换窗口且保留同一个任务库", async (context) => {
   const store = await fixture(context);
+  await store.writeSecret((await store.route("deepseek-flash")).credentialID, "fixture-key");
   const service = new ProductService(store);
   service.check = async () => ({ ok: true });
   service.gatewayReady = async () => {};

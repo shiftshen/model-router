@@ -442,10 +442,17 @@ export class ProductService {
     const checked = validateRoute(route);
     await this.ensureManagedLocalService(checked);
     if (checked.protocol === "oauth") return { models: [], message: "官方模型由 ChatGPT Desktop 自己管理，请在原版客户端内选择" };
-    const result = await upstream(checked, await this.store.secret(checked.credentialID), "models", null, 15000);
-    const data = await limitedJSON(result.body);
+    let data;
+    try {
+      const result = await upstream(checked, await this.store.secret(checked.credentialID), "models", null, 15000);
+      data = await limitedJSON(result.body);
+    } catch (error) {
+      if (![404, 405, 501].includes(error.status)) throw error;
+      return { models: checked.model ? [checked.model] : [], catalogUnavailable: true, message: "此接口不提供模型目录；已保留当前模型，可手动输入供应商支持的模型 ID，再执行真实验证。" };
+    }
     if (!Array.isArray(data.data)) throw new Error("供应商未返回标准模型列表，请手动输入模型 ID");
-    return { models: data.data.map((entry) => entry.id).filter((id) => typeof id === "string").slice(0, 2000), message: "已读取供应商模型列表；列表出现不代表已通过调用验证" };
+    const listed = data.data.map((entry) => entry.id).filter((id) => typeof id === "string").slice(0, 2000);
+    return { models: [...new Set([checked.model, ...listed].filter(Boolean))], listedModels: listed, message: "已保留当前模型及供应商目录候选；可手动输入模型 ID，实际可用性以真实验证为准。" };
   }
   async check(id) {
     const route = await this.store.route(id);
@@ -457,7 +464,10 @@ export class ProductService {
     }
     if (!route.model) throw new Error("请先选择模型 ID");
     const result = await this.discover(route);
-    if (!result.models.includes(route.model)) throw new Error("服务可连接，但未返回所选模型；请发现模型并重新选择");
+    if (result.catalogUnavailable) return { message: result.message };
+    if (!(result.listedModels ?? result.models).includes(route.model)) {
+      return { message: "连接正常，但 /models 未列出该别名；不阻止启动，请用真实推理请求验证。" };
+    }
     return { message: "连接正常，模型已列出；尚不等同真实推理验证" };
   }
   // 不知道供应商实现的是哪套接口时，逐个真跑一次最小请求，把能用的那套记下来。
@@ -581,7 +591,13 @@ export class ProductService {
   async prepare(id, { continueExisting = false } = {}) {
     let route = await this.store.route(id);
     if (route.archived || !route.model) throw new Error("模型未配置完整或已归档");
-    await this.check(id);
+    // Model discovery is optional and may use a different permission scope.
+    // Never gate inference startup on GET /models, even when it returns 401/404.
+    if (route.protocol === "oauth") await this.check(id);
+    else {
+      if (!route.noKey && !(await this.store.secret(route.credentialID))) throw new Error("请先配置 API Key");
+      await this.ensureManagedLocalService(route);
+    }
     if (route.protocol !== "oauth") await this.gatewayReady();
     const { hasContinuation } = await this.instancePaths(id);
     if (continueExisting && route.protocol === "oauth") throw new Error("官方会话无需导入第三方实例");
@@ -864,6 +880,37 @@ export class ProductService {
       changed.push({ id: route.id, from: Number(live.contextWindow), to: wanted });
     }
     return changed;
+  }
+
+  async refreshRouteHomes(id) {
+    const route = await this.store.route(id);
+    if (!route || route.protocol === "oauth" || route.archived) return { updated: [], skipped: [] };
+    const running = await this.runningWindows();
+    const updated = [], skipped = [];
+    let source = "";
+    try { source = await fs.readFile(path.join(this.officialHome, "config.toml"), "utf8"); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    const table = buildRouterTable((await this.store.read()).routes);
+    for (const root of ["instances-v2", "continuations-v1"]) {
+      const home = path.join(this.store.root, root, id, "codex-home");
+      try { await fs.access(path.join(home, "config.toml")); }
+      catch (error) { if (error.code === "ENOENT") continue; throw error; }
+      if (running.has(id)) { skipped.push(home); continue; }
+      const catalogPath = path.join(home, "model-catalog.json");
+      const remembered = await readWindowCurrentModel(home);
+      const chosen = route.switchable ? (routerTableEntry(table, remembered) || this.routerSelection(table, id, id)) : null;
+      const runtimeProfile = resolveRuntimeProfile(chosen?.route || route);
+      await atomicJSON(catalogPath, route.switchable ? routerCatalog(table) : catalog(route));
+      const config = route.switchable
+        ? renderRouterConfig(source, { model: chosen.slug, catalogPath, runtimeProfile })
+        : renderProductConfig(source, route, catalogPath);
+      const temporary = path.join(home, `.config-${randomUUID()}.toml`);
+      await fs.writeFile(temporary, config, { mode: 0o600 });
+      await fs.rename(temporary, path.join(home, "config.toml"));
+      await this.syncSharedRuntimeAssets(home, runtimeProfile);
+      updated.push(home);
+    }
+    return { updated, skipped };
   }
 
   async refreshCatalogs() {

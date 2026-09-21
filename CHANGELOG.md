@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.2.3
+
+- Do not block model startup on optional /models discovery. Validate local configuration and let actual inference determine upstream availability.
+- Preserve manually entered model aliases in discovery; unsupported catalog endpoints retain the current model instead of preventing selection.
+- Saving a route synchronizes existing stopped dedicated/continuation homes, including model catalogs. Running homes explicitly require reopening.
+- Reproduce ark-code-latest with the real Codex CLI and a shell file round trip; add regressions for missing catalogs, aliases, authorization failures and stale home configuration.
+
 ## 3.2.2
 
 - Official entry activates the detected default-profile PID instead of an arbitrary application instance sharing the same bundle ID.

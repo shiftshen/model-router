@@ -136,6 +136,31 @@ test("key changes stay private, empty keeps key, clearing removes it", async (co
   assert.equal(await store.secret("deepseek"), "");
 });
 
+test("missing aliases in discovery are advisory rather than a model rejection", async (context) => {
+  const store = await fixture(context);
+  const server = http.createServer((request, response) => {
+    if (request.url === "/v1/models") {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ data: [{ id: "deepseek-v4-flash-ga-260731" }] }));
+      return;
+    }
+    if (request.url === "/v1/responses") {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ output: [{ type: "message", content: [{ type: "output_text", text: "MODEL_ASSISTANT_OK" }] }] }));
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  const endpoint = await listen(server, context);
+  const data = await store.read();
+  const route = validateRoute({ id: "coding-plan", name: "Coding Plan", vendor: "Provider", endpoint: `${endpoint}/v1`, protocol: "responses", model: "deepseek-v4-flash", credentialID: "coding-plan" });
+  await store.save(route, data.revision, "test-key");
+  const service = new ProductService(store);
+  const result = await service.check(route.id);
+  assert.match(result.message, /连接正常/);
+  assert.match(result.message, /真实推理请求/);
+});
+
 test("editing or adding a different endpoint never reuses original credentials", async (context) => {
   const store = await fixture(context);
   const route = (await store.read()).routes.find((entry) => entry.id === "deepseek-flash");
@@ -371,6 +396,7 @@ test("启动模型窗口前清掉不重要副本，首次「导入原会话并�
 
   const routeID = "deepseek-flash";
   const windowRoot = path.join(store.root, "continuations-v1", routeID);
+  await store.writeSecret((await store.route(routeID)).credentialID, "fixture-key");
   const winHome = path.join(windowRoot, "codex-home");
   // conversation-import.json 一在，这个窗口就被当成「续接窗口」，启动走的正是 prepare() 这条路径。
   await fs.mkdir(winHome, { recursive: true });
