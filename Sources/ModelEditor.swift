@@ -43,7 +43,7 @@ struct ModelEditor: View {
                 TextField("显示名称", text: $draft.name)
                 TextField("供应商", text: $draft.vendor)
                 if draft.protocol == "oauth" {
-                    Text("官方独立入口的模型由 ChatGPT Desktop 自己管理。")
+                    Text("官方原版只用于登录与续期；工作窗口会自动同步官方模型。")
                 } else {
                     TextField("模型 ID", text: $draft.model, prompt: Text("可手动输入，也可保存后发现模型"))
                 }

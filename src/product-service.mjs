@@ -692,9 +692,12 @@ export class ProductService {
   async setSwitching(id, enabled) {
     const route = await this.store.route(id);
     if (route.protocol === "oauth") throw new Error("官方 ChatGPT 入口自带模型选择，不需要切换窗口");
-    if (enabled && !route.model) throw new Error("请先选择模型 ID");
+    if (!route.model) throw new Error("请先选择模型 ID");
+    // 3.3.1 起只保留统一可切换窗口。继续接受旧客户端的命令，但永远保持开启，
+    // 避免旧 UI 把窗口重新降级成只能使用一个模型。
+    const unified = true;
     const data = await this.store.read();
-    await this.store.save({ ...route, switchable: Boolean(enabled) }, data.revision);
+    await this.store.save({ ...route, switchable: unified }, data.revision);
     // 该条目可能同时有普通实例目录和"导入原会话"副本目录，两个都改，保证下次打开哪个窗口都一致。
     const homes = ["instances-v2", "continuations-v1"].map((root) => path.join(this.store.root, root, id, "codex-home"));
     const table = buildRouterTable((await this.store.read()).routes);
@@ -709,12 +712,10 @@ export class ProductService {
       const catalogPath = path.join(homePath, "model-catalog.json");
       const current = await this.store.route(id);
       const remembered = await readWindowCurrentModel(homePath);
-      const chosen = enabled ? (routerTableEntry(table, remembered) || this.routerSelection(table, id, id)) : null;
+      const chosen = routerTableEntry(table, remembered) || this.routerSelection(table, id, id);
       const runtimeProfile = resolveRuntimeProfile(chosen?.route || current);
-      const updated = enabled
-        ? renderRouterConfig(source, { model: chosen.slug, catalogPath, runtimeProfile })
-        : renderProductConfig(source, current, catalogPath);
-      await atomicJSON(catalogPath, enabled ? routerCatalog(table) : catalog(current));
+      const updated = renderRouterConfig(source, { model: chosen.slug, catalogPath, runtimeProfile });
+      await atomicJSON(catalogPath, routerCatalog(table));
       const temporary = path.join(homePath, `.config-${randomUUID()}.toml`);
       await fs.writeFile(temporary, updated, { mode: 0o600 });
       await fs.rename(temporary, path.join(homePath, "config.toml"));
@@ -722,9 +723,7 @@ export class ProductService {
     }
     return {
       ...(await this.switchSummary()),
-      message: enabled
-        ? `「${route.name}」的窗口已改为可切换模型${touched ? "" : "（首次启动生效）"}：关闭这个窗口，再从助手点「启动 Codex」，对话不会丢；之后在 Codex 顶部直接换模型即可。`
-        : `「${route.name}」已恢复单模型窗口：关闭这个窗口再启动即可。`,
+      message: `「${route.name}」使用统一可切换窗口${touched ? "" : "（首次启动生效）"}：重开窗口后，可在 Codex 顶部直接选择官方登录模型或第三方模型。`,
     };
   }
   // ChatGPT Desktop（官方）入口必须打开官方默认资料 + ~/.codex。
@@ -823,7 +822,7 @@ export class ProductService {
       diskCleanup: prepared.diskCleanup,
       message: (options.continueExisting
         ? "已打开原会话的独立副本；后续工作保存在此模型窗口，原官方会话不受影响。"
-        : `已为「${prepared.route.name}」打开专用单模型窗口（PID ${child.pid}）：只跑这一个模型。想复用已有窗口，用「打开 Codex」。`) + cleaned,
+        : `已为「${prepared.route.name}」打开兼容窗口（PID ${child.pid}）：窗口内可从 Codex 顶部切换官方登录模型和普通 API。`) + cleaned,
     };
   }
   switchPaths() {

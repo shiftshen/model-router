@@ -73,7 +73,8 @@ async function main() {
     }
   }
   if (command === "start-gateway") return service.startGateway();
-  if (command === "launch") return service.launch(id);
+  // 旧客户端仍会调用 launch；3.3.1 起把它重定向到统一可切换窗口。
+  if (command === "launch") return service.openCodex(id);
   // 侧边栏点一个模型：开着的窗口优先复用，官方入口开真官方。
   if (command === "open-codex") return service.openCodex(id || "");
   if (command === "delete-unmanaged-window") return service.deleteUnmanagedWindow(id || "");

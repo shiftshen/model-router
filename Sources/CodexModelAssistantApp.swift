@@ -78,6 +78,9 @@ struct ModelLibraryView: View {
         .onAppear { sizeWindowOnce() }
         .task {
             await library.refresh()
+            // 登录有效时自动把官方模型加入统一目录；未登录时静默跳过，
+            // 第三方模型和已有窗口照常可用。
+            await library.syncOfficialModels(silent: true)
             await library.openSwitch()
             // 启动时就把磁盘占用算出来，底部的状态条才有内容。
             await library.refreshDisk()
@@ -124,7 +127,7 @@ struct ModelLibraryView: View {
                     showModels = true
                     Task { await library.perform("diagnostics") }
                 }
-                Button("打开 ChatGPT Desktop（官方）") { Task { await library.openCodex("official") } }
+                Button("打开官方客户端登录 / 续期") { Task { await library.openCodex("official") } }
                 Button("检查更新…") { Task { await library.checkForUpdates(currentVersion: bundleVersion, silent: false) } }
                 Divider()
                 Divider()
@@ -304,20 +307,20 @@ struct ModelLibraryView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 7) {
                 Image(systemName: "app.badge.checkmark").foregroundStyle(.blue)
-                Text("ChatGPT Desktop（官方）").font(.system(size: 15, weight: .semibold))
-                Text("原版").font(.system(size: 10, weight: .semibold)).foregroundStyle(.blue)
+                Text("官方登录与模型同步").font(.system(size: 15, weight: .semibold))
+                Text("授权").font(.system(size: 10, weight: .semibold)).foregroundStyle(.blue)
                     .padding(.horizontal, 6).padding(.vertical, 2).background(Color.blue.opacity(0.12), in: Capsule())
                 Spacer()
             }
-            Text("打开系统里的官方 ChatGPT Desktop / Codex 默认资料：复用你的登录账号、原任务库和官方模型选择器。")
+            Text("官方客户端只负责登录和续期。同步后，常用及所有新窗口都能在同一会话中切换官方登录模型和普通 API。")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Text("不经过模型助手路由 · 不创建独立 CODEX_HOME · 不使用 --user-data-dir")
+            Text("工作请进入下方可切换窗口；无需退出 ChatGPT 账号")
                 .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             HStack(spacing: 8) {
-                Button("加入可切换窗口") { Task { await library.syncOfficialModels() } }
+                Button("登录 / 续期") { Task { await library.openCodex("official") } }
                     .controlSize(.small).disabled(library.busy)
-                Button("打开 / 切到 ChatGPT Desktop") { Task { await library.openCodex("official") } }
+                Button("同步并打开可切换窗口") { Task { await library.syncOfficialModels(openWorkWindow: true) } }
                     .buttonStyle(.borderedProminent).controlSize(.small).disabled(library.busy)
                 Spacer()
             }
@@ -326,9 +329,7 @@ struct ModelLibraryView: View {
         .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
         .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.blue.opacity(0.32), lineWidth: 1))
-        .contentShape(RoundedRectangle(cornerRadius: 10))
-        .onTapGesture { Task { await library.openCodex("official") } }
-        .help("打开官方 ChatGPT Desktop / Codex 默认资料。Dock 图标会和可切换窗口共用，因此从这里进入最明确。")
+        .help("官方原版只用于登录与续期；实际开发统一进入可切换窗口。")
     }
 
     private func windowCard(_ window: WorkWindow) -> some View {
@@ -383,16 +384,15 @@ struct ModelLibraryView: View {
         .help(window.homePath ?? "")
     }
 
-    // 这些是「专用单模型窗口」留下的资料目录：不写注册表，所以以前既看不见也删不掉，
-    // 实测能堆到 3.8 GB。现在列出来，能打开、也能删。
+    // 旧版专用窗口不再允许打开，只保留清理入口，避免用户又回到单模型模式。
     private var unmanagedSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("单模型窗口").font(.callout.weight(.semibold))
+                Text("旧版专用窗口资料").font(.callout.weight(.semibold))
                 Text("\(library.unmanaged.count) 个 · 合计 \(humanBytes(library.unmanaged.reduce(Int64(0)) { $0 + ($1.bytes ?? 0) }))")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Text("用「⋯ → 专用单模型窗口」开出来的，每个只跑一个模型；不用了就删，腾出空间。")
+                Text("新版已停用单模型模式。这些是旧版遗留资料，可确认不再需要后删除。")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
             ForEach(library.unmanaged) { entry in
@@ -406,7 +406,6 @@ struct ModelLibraryView: View {
                         Text("运行中 · PID \(entry.pid ?? 0)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.green)
                     }
                     Spacer()
-                    Button("打开") { Task { await library.openUnmanaged(entry.windowID) } }.controlSize(.small).disabled(library.busy)
                     Button("删除") { unmanagedDeleteTarget = entry }.controlSize(.small)
                         .disabled(library.busy || entry.running == true)
                         .help(entry.running == true ? "正在运行，先关掉它再删" : "删掉这个窗口的资料目录，不可恢复")
@@ -813,7 +812,7 @@ struct ModelLibraryView: View {
                 Divider()
                 row("可切换窗口", model.protocol == "oauth" ? "不经过 Model Router 工作窗口" : (model.archived ? "已归档，不收录" : (library.switchModels.contains { $0.id == model.id } ? "已收录 · 同一窗口直接换" : "未收录")))
                 Divider()
-                row("本窗口模型", model.protocol == "oauth" ? "由 ChatGPT Desktop 内选择" : (model.switchable == true ? "可切换全部模型" : "仅此模型"))
+                row("工作窗口", model.protocol == "oauth" ? "只用于登录 / 续期" : "统一可切换全部模型")
                 Divider()
                 row("Codex 环境", model.protocol == "oauth" ? "Full · 官方" : ((model.runtimeProfile ?? "auto") == "full" ? "Full · 完整工具" : ((model.runtimeProfile ?? "auto") == "lite" ? "Lite · 轻量" : "Auto · 本地轻量 / 云端完整")))
                 Divider()
@@ -841,29 +840,21 @@ struct ModelLibraryView: View {
             Spacer(minLength: 0)
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "macwindow.on.rectangle").foregroundStyle(.secondary)
-                Text("只想换模型、继续同一个对话：用「在可切换窗口中打开」，之后在 Codex 顶部的模型选择里直接换，窗口和对话不变。想给某个模型单独一个专用窗口：用「启动 Codex」，旧任务可用「导入原会话并继续」复制一份；副本与原件不会自动同步，任务内容都会发送给所选供应商。").font(.caption).foregroundStyle(.secondary)
+                Text("所有工作窗口都能在同一会话中切换官方登录模型和普通 API。官方额度不足时选第三方；第三方不合适时切回官方，无需退出账号。").font(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 if model.id != "official" { Button(model.archived ? "恢复模型" : "归档") { Task { await library.archive() } } }
                 Spacer()
                 Button(model.protocol == "oauth" ? "检查登录" : "检查连接") { Task { await library.perform("check") } }.disabled(!model.ready || model.archived)
                 if model.protocol == "oauth" {
-                    Button("打开 ChatGPT Desktop") { Task { await library.openCodex(model.id) } }.buttonStyle(.borderedProminent)
-                        .help("打开官方 ChatGPT Desktop / Codex 默认资料、登录状态和任务库")
+                    Button("登录 / 续期") { Task { await library.openCodex(model.id) } }
+                    Button("同步并打开可切换窗口") { Task { await library.syncOfficialModels(openWorkWindow: true) } }.buttonStyle(.borderedProminent)
                 } else {
                     Button("真实验证") { Task { await library.perform("probe") } }.disabled(!model.ready || model.archived).help("发送短测试请求，消耗少量供应商额度")
                     Button("打开可切换窗口") { Task { await library.openCodex(model.id) } }.buttonStyle(.borderedProminent).disabled(!model.ready || model.archived)
                         .help("已经开着的窗口就切过去，没有窗口才新建。到 Codex 顶部的模型选择里换模型即可")
                     Button("新建窗口") { Task { await library.newWindow(initial: model.id) } }.disabled(!model.ready || model.archived)
                         .help("再开一个独立的 Codex 窗口，用这个模型作为起始模型；想看两个模型同时干活时用")
-                    Menu {
-                        Button("专用单模型窗口（不复用已有窗口）") { Task { await library.perform("launch") } }.disabled(!model.ready || model.archived)
-                        Button("导入官方会话并继续") { Task { await library.perform("continue") } }.disabled(!model.ready || model.archived)
-                        if model.switchable == true {
-                            Button("本窗口改为单模型") { Task { await library.perform("disable-switching") } }
-                        }
-                    } label: { Image(systemName: "ellipsis.circle") }
-                    .menuStyle(.borderlessButton).frame(width: 28)
                 }
             }.disabled(library.busy)
         }.padding(28)

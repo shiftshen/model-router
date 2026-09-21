@@ -27,7 +27,7 @@ function renderUsage() {
 function renderWindows() {
   const target = byId("windows");
   const items = state.windows || [];
-  const official = '<article class="card official-card"><div class="card-head"><div><div class="title">ChatGPT Desktop（官方）</div><div class="muted">原版 · 复用你的 ChatGPT/Codex 登录</div></div><span class="badge ok">官方</span></div><div class="official-note">直接打开系统里的官方 ChatGPT Desktop / Codex 默认资料。不会创建 Model Router CODEX_HOME，也不会进入第三方模型路由；官方模型请在原版客户端里选择。</div><div class="card-actions"><button data-sync-official="1">加入可切换窗口</button><button class="primary" data-official-open="1">打开 / 切到 ChatGPT Desktop</button></div></article>';
+  const official = '<article class="card official-card"><div class="card-head"><div><div class="title">官方登录与模型同步</div><div class="muted">官方客户端只负责登录与续期</div></div><span class="badge ok">授权</span></div><div class="official-note">同步后，常用及所有新窗口都能在同一会话中切换官方登录模型和普通 API，无需退出账号。</div><div class="card-actions"><button data-official-open="1">登录 / 续期</button><button class="primary" data-open-official-work="1">同步并打开可切换窗口</button></div></article>';
   const managed = items.map((w) => {
     const current = state.switchModels.find((m) => m.slug === w.currentModel || m.id === w.currentModel || m.model === w.currentModel);
     const initial = routeById(w.initialModel);
@@ -139,7 +139,6 @@ function openEditor(route) {
   byId("modelContext").value = current.contextWindow || "";
   byId("modelRuntimeProfile").value = current.runtimeProfile || "auto";
   byId("modelNoKey").checked = !!current.noKey;
-  byId("modelSwitchable").checked = current.switchable !== false;
   byId("modelFallback").innerHTML = '<option value="">不设置</option>' + (state.routes || []).filter((x) => x.id !== current.id && x.protocol !== "oauth" && !x.archived).map((x) => '<option value="' + escapeHtml(x.id) + '">' + escapeHtml(x.name) + '</option>').join("");
   byId("modelFallback").value = current.fallback || "";
   byId("modelDialog").showModal();
@@ -164,7 +163,7 @@ async function saveEditor(event) {
     runtimeProfile: byId("modelRuntimeProfile").value,
     archived: !!prior.archived,
     hidden: !!prior.hidden,
-    switchable: byId("modelSwitchable").checked,
+    switchable: true,
     fallback: byId("modelFallback").value,
     contextWindow: Number(byId("modelContext").value || 0)
   };
@@ -182,7 +181,18 @@ document.addEventListener("click", async (event) => {
   if (!el) return;
   try {
     if (el.dataset.editModel) return openEditor(routeById(el.dataset.editModel));
-    if (el.dataset.syncOfficial) { el.disabled = true; try { const result = await call("sync-official-models"); await refresh(); accept(result); setStatus(result.message || "官方登录模型已加入"); } finally { el.disabled = false; } return; }
+    if (el.dataset.openOfficialWork) {
+      el.disabled = true;
+      try {
+        const result = await call("sync-official-models");
+        await refresh();
+        const official = (state.switchModels || []).find((model) => model.protocol === "chatgpt");
+        if (!official) throw new Error("没有读取到官方登录模型，请先打开官方客户端完成登录");
+        accept(await call("open-codex", [official.id]));
+        setStatus("已打开可切换工作窗口；在 Codex 顶部可随时选择官方或普通 API。");
+      } finally { el.disabled = false; }
+      return;
+    }
     if (el.dataset.officialOpen) { setStatus("正在打开 ChatGPT Desktop（官方）…"); accept(await call("open-codex", ["official"])); return; }
     if (el.dataset.openModel) { setStatus("正在打开 Codex…"); accept(await call("open-codex", [el.dataset.openModel])); return; }
     if (el.dataset.checkModel) { setStatus("正在检查连接…"); setStatus((await call("check", [el.dataset.checkModel])).message || "连接正常"); return; }
@@ -224,6 +234,7 @@ byId("modelForm").addEventListener("submit", saveEditor);
   platformInfo = await window.cma.platform();
   byId("subtitle").textContent = "Windows Preview · v" + platformInfo.version + " · " + platformInfo.arch + (platformInfo.portable ? " · Portable" : "");
   await refresh();
+  try { await call("sync-official-models"); await refresh(); } catch { /* 未登录时第三方仍可正常使用 */ }
   await checkUpdate(true);
   setInterval(() => checkUpdate(true), 6 * 60 * 60 * 1000);
 })();

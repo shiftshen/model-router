@@ -57,7 +57,7 @@ macOS 会下载正式 notarized DMG，核对 Release SHA256、DMG、代码签名
 - 如果某个窗口只剩会话列表、看不到项目/文件夹分组，打开「更多 → 运行诊断」或「窗口管理」里的「修复工作窗口」。它同时修两处：任务库里的 `projects`、`project_roots`、`thread_sections`，以及侧边栏真正读取的 `CODEX_HOME/.codex-global-state.json`（`local-projects`、`thread-project-assignments`、`project-order` 等）。不会删除或覆盖原会话，也不会删除窗口已有的项目和归属。
 - 侧边栏「项目」分组的数据源是 `.codex-global-state.json` 而不是任务库 SQLite，这是早期版本导入后分组全部掉进「最近」的原因。修复只增不改：同一目录的重复项目按目录去重，并把会话归属改写到保留的那个项目（例如两个 `Playground 2` 只会剩一个）。写入前会先备份该文件，重复执行不会重复改动。
 - 窗口正在运行时，Codex 会在退出时用内存里的状态写回这个文件，所以修复后需要**重启该窗口**才能看到分组；从助手打开窗口时，会在启动前再自动补一次分组，保证最终状态正确。新建窗口也会自动从官方库补入项目分组。
-- 已经用惯的条目窗口（例如「DeepSeek V4.1 Flash · 官方」）也能改成可切换：选中该模型 →「本窗口也可切换模型」。它只改这个窗口的模型目录和 provider，`CODEX_HOME` 不变，所以**这个窗口里的对话和任务库原地保留**；关闭该窗口后从助手再点「启动 Codex」即生效。想变回单模型窗口，点「本窗口改为单模型」。
+- 所有工作窗口固定为可切换模式：在 Codex 顶部直接选择官方登录模型或普通 API，`CODEX_HOME`、对话和任务库保持不变。官方客户端原版入口只用于登录与续期。
 
 命令行等价入口：`windows`、`new-window [模型]`、`open-window <id>`、`rename-window <id> <名称>`、`close-window <id>`、`delete-window <id>`。
 

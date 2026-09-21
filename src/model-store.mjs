@@ -96,8 +96,9 @@ export function validateRoute(input) {
   // 隐藏条目不在模型库列表里显示，但仍会出现在可切换窗口的选择器中。
   route.hidden = route.protocol === "oauth" ? false : Boolean(input.hidden);
   route.archived = route.id === "official" ? false : Boolean(input.archived);
-  // 官方登录入口自带模型选择；第三方条目可以选择"这个窗口也能切模型"。
-  route.switchable = route.protocol === "oauth" ? false : Boolean(input.switchable);
+  // oauth 只是官方原版的登录/续期入口。所有真正参与工作的模型统一进入可切换窗口，
+  // 不再允许新建或保存“专用单模型”配置。
+  route.switchable = route.protocol !== "oauth";
   // 主模型失败（额度、限流、服务异常）时改用的备用条目，可为空。
   route.fallback = route.protocol === "oauth" ? "" : String(route.fallback || "").trim();
   if (route.fallback && (!validID(route.fallback) || route.fallback === route.id)) throw new Error("备用模型填写不正确");
@@ -137,7 +138,8 @@ export class ModelStore {
       const before = structuredClone(data);
       const validated = data.routes.map(validateRoute);
       const legacyOfficialIDs = new Set(validated.filter(isLegacyOfficialProxy).map((route) => route.id));
-      let migrated = legacyOfficialIDs.size > 0;
+      let migrated = legacyOfficialIDs.size > 0
+        || data.routes.some((route) => route?.id !== "official" && route?.switchable !== true);
       for (const { slug, route } of buildRouterTable(validated)) {
         if (!route.routerSlug) { route.routerSlug = slug; migrated = true; }
       }

@@ -332,13 +332,28 @@ final class LibraryViewModel: ObservableObject {
     // 「这个模型是不是已经开着」：官方入口看 ChatGPT Desktop 默认资料进程；其它模型看有没有窗口正跑着它
     // （起始模型就是它），再加上本地实例的状态。以前只查本地实例，所以普通模型明明开着也不亮。
     // Codex 记的是「模型 slug」，助手库里存的是条目 id。三种都对一遍，显示成可读名字。
-    func syncOfficialModels() async {
+    func syncOfficialModels(silent: Bool = false, openWorkWindow: Bool = false) async {
         guard !busy else { return }
         busy = true
         let response = await call(["sync-official-models"], timeout: 90)
         busy = false
-        if response.ok { await refresh() }
-        accept(response)
+        guard response.ok else {
+            if !silent { accept(response) }
+            return
+        }
+        await refresh()
+        if let official = switchModels.first(where: { $0.protocol == "chatgpt" }) {
+            if newWindowModel.isEmpty { newWindowModel = official.id }
+            if openWorkWindow {
+                await openCodex(official.id)
+                message = "官方登录模型已经同步。当前打开的是可切换工作窗口；在 Codex 顶部可随时改选官方或普通 API。"
+                success = true
+            } else if !silent {
+                accept(response)
+            }
+        } else if !silent {
+            accept(response)
+        }
     }
 
     func displayName(forModelKey key: String?) -> String? {

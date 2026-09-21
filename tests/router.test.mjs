@@ -39,7 +39,7 @@ test("可切换窗口收录第三方模型并按模型名生成唯一标识", ()
     { ...route("official-entry", "gpt-6-astra"), id: "official", protocol: "oauth" },
     validateRoute({ id: "official-gpt-5-6-sol", name: "旧官方 Sol", vendor: "OpenAI（官方登录）", protocol: "chatgpt", model: "gpt-5.6-sol" }),
   ]);
-  assert.deepEqual(table.map((entry) => entry.slug), ["dup", "dup-2", "qwen3.8-27b-96k"]);
+  assert.deepEqual(table.map((entry) => entry.slug), ["dup", "dup-2", "qwen3.8-27b-96k", "gpt-5.6-sol"]);
   assert.equal(table[0].route.id, "a-first");
   assert.equal(table[1].route.id, "b-second");
   assert.equal(routerTableEntry(table, "dup-2").route.id, "b-second");
@@ -47,7 +47,7 @@ test("可切换窗口收录第三方模型并按模型名生成唯一标识", ()
   assert.equal(routerTableEntry(table, "local").route.id, "local");
   assert.equal(routerTableEntry(table, "missing"), null);
   const catalog = routerCatalog(table);
-  assert.equal(catalog.models.length, 3);
+  assert.equal(catalog.models.length, 4);
   assert.equal(catalog.models[0].display_name, "模型 a-first");
   assert.deepEqual(catalog.models[0].input_modalities, ["text", "image"]);
   // 本地优先 / 专家策略已移除，目录里不再注入任何内置指令
@@ -390,18 +390,18 @@ test("自动识别接口会挑出真正可用的那一套并保存", async (cont
   await assert.rejects(failed.detectProtocol("messages-only"), /三套接口都没跑通/);
 });
 
-test("已有条目的窗口可以改成可切换窗口且保留同一个任务库", async (context) => {
+test("所有条目窗口始终使用统一可切换目录且保留同一个任务库", async (context) => {
   const store = await fixture(context);
   await store.writeSecret((await store.route("deepseek-flash")).credentialID, "fixture-key");
   const service = new ProductService(store);
   service.check = async () => ({ ok: true });
   service.gatewayReady = async () => {};
   const first = await service.prepare("deepseek-flash");
-  assert.match(await fs.readFile(path.join(first.homePath, "config.toml"), "utf8"), /routes\/deepseek-flash\/v1/);
-  const single = JSON.parse(await fs.readFile(path.join(first.homePath, "model-catalog.json"), "utf8"));
-  assert.equal(single.models.length, 1);
+  assert.match(await fs.readFile(path.join(first.homePath, "config.toml"), "utf8"), /router\/v1/);
+  const initial = JSON.parse(await fs.readFile(path.join(first.homePath, "model-catalog.json"), "utf8"));
+  assert.ok(initial.models.length > 1);
   const enabled = await service.setSwitching("deepseek-flash", true);
-  assert.match(enabled.message, /可切换模型/);
+  assert.match(enabled.message, /统一可切换窗口/);
   const config = await fs.readFile(path.join(first.homePath, "config.toml"), "utf8");
   assert.match(config, /cma_router/);
   assert.match(config, /router\/v1/);
@@ -411,9 +411,10 @@ test("已有条目的窗口可以改成可切换窗口且保留同一个任务�
   assert.equal((await store.route("deepseek-flash")).switchable, true);
   await service.prepare("deepseek-flash");
   assert.match(await fs.readFile(path.join(first.homePath, "config.toml"), "utf8"), /cma_router/);
-  await service.setSwitching("deepseek-flash", false);
-  assert.match(await fs.readFile(path.join(first.homePath, "config.toml"), "utf8"), /routes\/deepseek-flash\/v1/);
-  assert.equal((await store.route("deepseek-flash")).switchable, false);
+  const legacyDisable = await service.setSwitching("deepseek-flash", false);
+  assert.match(legacyDisable.message, /统一可切换窗口/);
+  assert.match(await fs.readFile(path.join(first.homePath, "config.toml"), "utf8"), /router\/v1/);
+  assert.equal((await store.route("deepseek-flash")).switchable, true);
   await assert.rejects(service.setSwitching("official", true), /不需要切换窗口/);
 });
 
@@ -440,12 +441,13 @@ test("改成可切换的条目窗口沿用原有环境令牌也能走切换路�
   assert.match((await switched.json()).output[0].content[0].text, /OK:deepseek-flash/);
   const other = await store.read();
   await store.save({ ...other.routes.find((entry) => entry.id === "deepseek-flash"), switchable: false }, other.revision);
-  const rejected = await fetch(`${gateway}/router/v1/responses`, {
+  assert.equal((await store.route("deepseek-flash")).switchable, true, "旧客户端保存 false 也必须被统一为可切换");
+  const stillAccepted = await fetch(`${gateway}/router/v1/responses`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${instanceToken}` },
     body: JSON.stringify({ model: "deepseek-flash", input: "hi" }),
   });
-  assert.equal(rejected.status, 401);
+  assert.equal(stillAccepted.status, 200);
 });
 
 // Codex 自带压缩：它按模型的 context_window 与 effective_context_window_percent 决定何时压缩。

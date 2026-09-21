@@ -14,8 +14,8 @@
 
 | | |
 |---|---|
-| 版本 | **3.3.0** |
-| 安装包 | `release/Model-Router-3.3.0-universal.dmg`（通用二进制：Apple Silicon + Intel） |
+| 版本 | **3.3.1** |
+| 安装包 | `release/Model-Router-3.3.1-universal.dmg`（通用二进制：Apple Silicon + Intel） |
 | 系统要求 | macOS 12.0 起 |
 | SHA-256 | 见 `release/SHA256SUMS.txt` |
 | 签名 | Developer ID Application（Chinda Lorcharoen）；正式 Release 执行 Apple notarization + staple，并用 `spctl` / `stapler` 验证 |
@@ -116,7 +116,7 @@ zsh scripts/package-release.sh
 - `src/model-store.mjs`：模型库、凭据、并发与输入校验。
 - `src/product-service.mjs`：发现、验证、实例准备、启动、诊断。
 - `src/session-transfer.mjs`：会话/项目元数据迁移——任务库合并、导入，以及 `.codex-global-state.json` 的侧边栏项目分组合并（只增不改、按目录去重、原子写入并备份）。
-- 官方入口：`ChatGPT Desktop（官方）` 打开的是官方桌面应用默认资料（`~/.codex`，带着你的登录状态和任务库），不再给它造一个空资料窗口；点其它模型时**已经有窗口在跑就切过去**，只有确实没有窗口才新建。
+- 官方客户端只负责登录与续期；Model Router 启动时自动同步官方模型。常用和新建窗口全部使用统一可切换目录，可在同一会话中选择官方登录模型或普通 API。
 - `src/window-registry.mjs`：窗口注册表（`windows.json`）——窗口标识校验、槽位路径映射、新建编号与名称分配、原子写入 0600。
 - `src/disk-cleanup.mjs`：磁盘治理——副本判定（以官方库为权威）、浏览器缓存白名单、清理计划与执行、审计清单、启动前单窗口自动清理。
 - `src/disk-policy.mjs`：磁盘策略（启动前自动清理 / 清缓存两个开关），带类型校验与版本递增。
@@ -124,7 +124,7 @@ zsh scripts/package-release.sh
 - `src/model-windows.mjs`：上下文窗口不写死。按模型名匹配真实窗口（官方模型 272K、Gemini 1M、Claude 200K…），用户自己填的非占位值优先，查不到用 512K 兜底；供应商报错里写着的真实上限会被读出来记回条目。
 - `src/context-compaction.mjs`：上下文估算与压缩。会话比模型窗口装得下时，网关静默压缩最早的部分再继续，绝不返回「超过上下文上限」把对话掐断；供应商自己报超限时也补一次压缩重试。估算是按内容算的——文本按字节折算，图片按张计价，`base64` 截图不会被当成十几万 token。
 - `src/provider-templates.mjs`：可维护的供应商目录。
-- `src/window-registry.mjs`：窗口注册表；单模型窗口按设计不写注册表，由「单模型窗口」列表单独管理。
+- `src/window-registry.mjs`：可切换窗口注册表。旧版专用窗口目录只作为兼容资料识别和清理，不再提供新建或打开入口。
 
 - `tests/product.test.mjs`、`tests/router.test.mjs`、`tests/session-transfer.test.mjs`、`tests/window-registry.test.mjs`、`tests/gateway-build.test.mjs`、`tests/disk-usage.test.mjs`：产品回归、可切换窗口、项目分组迁移、多窗口、网关指纹，以及磁盘治理（副本判定、缓存白名单、运行中窗口跳过、启动前自动清理、策略读写与幂等）。
 - `scripts/smoke-live.mjs`：真实 Codex shell 工具往返验收，会消耗对应供应商额度。
