@@ -42,7 +42,8 @@ for ARCH in arm64 x86_64; do
 done
 [[ ${#SLICES[@]} -eq 2 ]] || { echo "Universal 构建必须两个架构都成功，检查 $BUILD/slices/*.log" >&2; exit 1; }
 lipo -create -output "$APP/Contents/MacOS/CodexModelAssistant" "${SLICES[@]}"
-lipo "$APP/Contents/MacOS/CodexModelAssistant" -verify_arch arm64 x86_64
+lipo "$APP/Contents/MacOS/CodexModelAssistant" -verify_arch arm64
+lipo "$APP/Contents/MacOS/CodexModelAssistant" -verify_arch x86_64
 echo "主程序架构：$(lipo -archs "$APP/Contents/MacOS/CodexModelAssistant")"
 
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
@@ -61,7 +62,8 @@ for ARCH in arm64 x64; do
   fi
 done
 lipo -create "${NODE_SLICES[@]}" -output "$APP/Contents/Resources/node"
-lipo "$APP/Contents/Resources/node" -verify_arch arm64 x86_64
+lipo "$APP/Contents/Resources/node" -verify_arch arm64
+lipo "$APP/Contents/Resources/node" -verify_arch x86_64
 # 保留既有 LaunchAgent / Swift 调用路径，两个别名都由系统选择原生架构。
 for ARCH in arm64 x64; do
   rm -f "$APP/Contents/Resources/node-$ARCH"

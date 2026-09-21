@@ -1,5 +1,6 @@
 import http from "node:http";
 import fs from "node:fs";
+import os from "node:os";
 // 注意：node:fs 是回调版。之前两个「留痕」函数用 await fs.readFile/fs.writeFile 写文件，
 // 这两个调用会直接抛 TypeError（缺 callback），又被外层 catch{} 吞掉——
 // 结果是记录一条都没写下来，而调用方以为成功了。写文件一律用 promises 版。
@@ -10,7 +11,8 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ModelStore } from "./model-store.mjs";
 import { LocalQueue } from "./local-queue.mjs";
-import { buildRouterTable, routerID, routerTableEntry } from "./router.mjs";
+import { buildRouterTable, stableRouterTable, routerID, routerTableEntry } from "./router.mjs";
+import { readWindowRegistry, windowPaths } from "./window-registry.mjs";
 import { toChat, toAnthropic, fromCompletion, responseEvents, createResponseStream, nativePayload } from "./protocol-adapter.mjs";
 import { anthropicStreamParser, chatStreamParser } from "./stream-parsers.mjs";
 import { chatgptBaseURL, officialHeaders, officialPayload, officialTokens, officialResponseJSON } from "./chatgpt-auth.mjs";
@@ -173,7 +175,7 @@ export function isContextOverflow(error) {
 // 压缩：把较早的记录换成摘要，保留最近一段完整对话。
 // 保留量取窗口的 45%——留出输出空间，也让摘要本身有地方放。
 // 返回值里的 note 会拼进用户可见的说明，让用户知道发生了什么，而不是悄悄改了他的历史。
-export async function compactForWindow({ store, route, payload, limit, signal, keepRatio = 0.45, force = false, sessionId = "" }) {
+export async function compactForWindow({ store, route, payload, limit, signal, keepRatio = 0.45, force = false, sessionId = "", authFile = "", windowID = "" }) {
   const items = payload?.input;
   if (!Array.isArray(items) || items.length < 6) return null;
   const keepBudgetBytes = Math.max(64 * 1024, Math.floor(limit * keepRatio) * 3.2);
@@ -203,9 +205,9 @@ export async function compactForWindow({ store, route, payload, limit, signal, k
     }
     // 摘要请求同样会真花钱，而且带着整段历史（上下文最大的请求）。
     // 它绕过了上面那个路由候选循环，所以必须单独记一笔——否则「今天请求都去了谁」是漏的。
-    summaryAudit = await noteRoute(store.root, summarizer, { model: summarizer.model, kind: "summary", sessionId });
+    summaryAudit = await noteRoute(store.root, summarizer, { model: summarizer.model, kind: "summary", sessionId, windowID });
     const result = summarizer.protocol === "chatgpt"
-      ? await officialUpstream(summarizer, request, signal, 120000)
+      ? await officialUpstream(summarizer, request, signal, 120000, authFile)
       : await upstream(summarizer, key, suffix, summaryBody, 120000, signal, sessionId);
     const body = summarizer.protocol === "chatgpt" ? await officialResponseJSON(result) : await limitedJSON(result.body, responseLimitBytes);
     await confirmRoute(store.root, summaryAudit.requestId, { observedModel: body?.model || "", protocol: summarizer.protocol });
@@ -296,7 +298,7 @@ async function updateAuditUsage(root, entry, phase) {
 }
 
 // started 表示请求确实发出（可能已经计费）；只有 completed 才能证明模型切换成功。
-export async function noteRoute(root, route, { model = "", fallback = false, kind = "request", sessionId = "" } = {}) {
+export async function noteRoute(root, route, { model = "", fallback = false, kind = "request", sessionId = "", windowID = "" } = {}) {
   let host = "";
   try { host = new URL(route.endpoint).hostname; } catch { host = route.endpoint || ""; }
   const entry = {
@@ -311,6 +313,7 @@ export async function noteRoute(root, route, { model = "", fallback = false, kin
     protocol: route.protocol || "",
     fallback,
     kind,
+    windowID: String(windowID ?? "").trim(),
     sessionId: String(sessionId ?? "").trim(),
     status: "started",
     confirmed: false,
@@ -409,8 +412,9 @@ export function upstreamFailure(status, detail) {
 }
 
 // 官方模型：用 Codex 自己的 ChatGPT 登录，直接转发到官方后端，账号、额度、模型都由官方管理。
-export async function officialUpstream(route, payload, signal, timeout = 3600000) {
-  const tokens = await officialTokens();
+export async function officialUpstream(route, payload, signal, timeout = 3600000, authFile = "") {
+  if (!authFile) { const error = new Error("官方请求缺少独立窗口账号，已拒绝使用全局账号"); error.status = 401; throw error; }
+  const tokens = await officialTokens({ file: authFile });
   const response = await fetch(`${chatgptBaseURL}/responses`, {
     method: "POST",
     headers: officialHeaders(tokens, payload.session_id || randomUUID()),
@@ -553,10 +557,14 @@ async function rememberProtocol(store, route, protocol) {
 
 // 切换窗口接受切换令牌；被标记为"可切换"的条目窗口即使还在用旧环境变量启动，也能继续工作。
 async function acceptedTokens(store, switched, routeID) {
-  if (!switched) return [await store.token(routeID)];
+  if (!switched) return [{ token: await store.token(routeID), windowID: "" }];
   const data = await store.read();
-  const tokens = [await store.token(routerID)];
-  for (const route of data.routes.filter((entry) => entry.switchable)) tokens.push(await store.token(route.id));
+  const registry = await readWindowRegistry(store.root);
+  const tokens = [];
+  for (const entry of registry.windows) tokens.push({ token: await store.token("window-" + entry.id), windowID: entry.id });
+  // 旧令牌仅兼容第三方 API；官方请求必须绑定独立窗口，禁止回退全局账号。
+  tokens.push({ token: await store.token(routerID), windowID: "" });
+  for (const route of data.routes.filter((entry) => entry.switchable)) tokens.push({ token: await store.token(route.id), windowID: "" });
   return tokens;
 }
 
@@ -605,11 +613,13 @@ export function createGateway(store = new ModelStore(), options = {}) {
       const endpoint = match[2];
       const supplied = String(request.headers.authorization || "").replace(/^Bearer /, "");
       const tokens = await acceptedTokens(store, switched, match[1]);
-      if (!tokens.some((token) => supplied.length === token.length && timingSafeEqual(Buffer.from(supplied), Buffer.from(token)))) return sendJSON(response, 401, { error: { message: "实例访问令牌无效" } });
+      const authorized = tokens.find(({ token }) => supplied.length === token.length && timingSafeEqual(Buffer.from(supplied), Buffer.from(token)));
+      if (!authorized) return sendJSON(response, 401, { error: { message: "实例访问令牌无效" } });
+      const authFile = authorized.windowID ? path.join(windowPaths(store.root, authorized.windowID).homePath, "auth.json") : "";
       let route = switched ? null : await store.route(match[1]);
       if (route?.archived || route?.protocol === "oauth") return sendJSON(response, 403, { error: { message: "此模型不能通过网关调用" } });
       if (endpoint === "models" && request.method === "GET" && switched) {
-        const table = buildRouterTable((await store.read()).routes);
+        const table = stableRouterTable((await store.read()).routes);
         return sendJSON(response, 200, { object: "list", data: table.map(({ slug, route: entry }) => ({ id: slug, object: "model", owned_by: entry.vendor || "codex-model-assistant" })) });
       }
       if (endpoint === "models" && request.method === "GET") {
@@ -633,7 +643,13 @@ export function createGateway(store = new ModelStore(), options = {}) {
       } else if (!route.model || payload.model !== route.model) {
         return sendJSON(response, 400, { error: { message: "模型与实例不匹配，请在助手中创建对应实例" } });
       }
+      if (route.protocol === "chatgpt" && (!authorized.windowID || !authFile)) {
+        return sendJSON(response, 401, { error: { code: "window_account_required", message: "无法确认此请求所属窗口的官方账号，请重开工作窗口并在该窗口登录；不会使用全局账号" } });
+      }
       const budgetPayload = payloadForRoute(payload, route);
+      if (route.protocol === "chatgpt" && options.enableExperimentalOfficial !== true) {
+        return sendJSON(response, 403, { error: { code: "official_window_required", message: "稳定版请在官方原版窗口使用官方订阅模型；此工作窗口仅支持第三方 API 模型" } });
+      }
       if (budgetPayload !== payload) {
         process.stdout.write(`[lite] ${route.id}: tools ${Array.isArray(payload.tools) ? payload.tools.length : 0}→${Array.isArray(budgetPayload.tools) ? budgetPayload.tools.length : 0}, request ${(payloadSize(payload) / 1024).toFixed(1)}→${(payloadSize(budgetPayload) / 1024).toFixed(1)} KB\n`);
       }
@@ -656,7 +672,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
         }
         // 一轮压缩通常够；不够就再压一轮（最多三轮），实在压不下去才交给供应商判。
         for (let pass = 0; pass < 3 && estimate > budget; pass += 1) {
-          const compacted = await compactForWindow({ store, route, payload, limit: budget, signal: abort.signal, force: true });
+          const compacted = await compactForWindow({ store, route, payload, limit: budget, signal: abort.signal, force: true, authFile, windowID: authorized.windowID });
           if (!compacted) break;
           payload.input = compacted.input;
           payloadBytesNote = compacted.note;
@@ -699,7 +715,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
         const targetKey = candidate.key ?? (await store.secret(target.credentialID));
         // started 先证明请求确实发出；完成后再原位改为 completed，不能把“尝试过”冒充“切换成功”。
         if (candidateIndex > 0) await noteFallback(store.root, route, target, errorMessage(lastError ?? new Error("首选条目不可用")), { sessionId: payload.session_id });
-        const routeAudit = await noteRoute(store.root, target, { model: target.model, fallback: candidateIndex > 0, sessionId: payload.session_id });
+        const routeAudit = await noteRoute(store.root, target, { model: target.model, fallback: candidateIndex > 0, sessionId: payload.session_id, windowID: authorized.windowID });
         // 从真正发起请求就开始计时：供应商连响应头都不给的情况同样会断开并转备用。
         const callSignal = attemptSignal();
         const attempts = protocolChain(target.protocol);
@@ -709,7 +725,17 @@ export function createGateway(store = new ModelStore(), options = {}) {
           try {
             let observedModel = "";
             if (attempt === "chatgpt") {
-              const result = await (options.officialUpstream || officialUpstream)({ ...target, protocol: attempt }, { ...targetPayload, model: target.model }, callSignal);
+              if (options.enableExperimentalOfficial !== true) {
+                const error = new Error("稳定版不允许转用官方订阅计费；请打开官方原版窗口");
+                error.status = 403;
+                throw error;
+              }
+              if (!authorized.windowID || !authFile) {
+                const error = new Error("无法确认此请求所属窗口的官方账号，请重开工作窗口并在该窗口登录；不会使用全局账号");
+                error.status = 401;
+                throw error;
+              }
+              const result = await (options.officialUpstream || officialUpstream)({ ...target, protocol: attempt }, { ...targetPayload, model: target.model }, callSignal, 3600000, authFile);
               if (payload.stream && !response.headersSent) response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
               armIdle();
               if (!payload.stream) {
@@ -820,7 +846,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
             }
             if (!compactionAttempted && isContextOverflow(error)) {
               compactionAttempted = true;
-              const retried = await compactForWindow({ store, route, payload, limit: budget, signal: abort.signal });
+              const retried = await compactForWindow({ store, route, payload, limit: budget, signal: abort.signal, authFile, windowID: authorized.windowID });
               if (retried) {
                 payload.input = retried.input;
                 payloadBytesNote = retried.note;

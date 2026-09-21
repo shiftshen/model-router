@@ -11,6 +11,7 @@ const allowedCommands = new Set([
   "start-gateway", "launch", "open-codex", "usage-report", "recent-routes",
   "live-threads", "continue", "switch-status", "windows", "refresh-catalogs", "sync-official-models",
   "new-window", "open-window", "rename-window", "close-window", "delete-window",
+  "sync-account",
   "adopt-window", "disk-usage", "cleanup-plan", "diagnostics", "export",
   "enable-switching", "disable-switching", "set-fallback", "hide", "check-update", "prepare-update"
 ]);

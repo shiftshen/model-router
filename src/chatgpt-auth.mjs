@@ -25,7 +25,7 @@ function tokenClaims(token) {
 }
 
 // 只向产品界面暴露账号标识，不返回任何 access/refresh/id token。
-// 工作窗口和网关都复用 ~/.codex/auth.json；这里显示的就是官方请求实际使用的账号。
+// 调用方必须传入所属窗口的账号文件；默认路径仅用于官方历史入口的状态显示。
 export function accountSummary(auth, { now = Date.now() } = {}) {
   const tokens = auth?.tokens ?? {};
   const access = tokenClaims(tokens.access_token);
@@ -53,10 +53,10 @@ export async function officialTokens({ file = authPath, now = Date.now() } = {})
   // Codex owns refresh-token rotation. A proxy must not race it or overwrite auth.json.
   let auth;
   try { auth = await readAuth(file); }
-  catch { const error = new Error("请先打开官方 ChatGPT Desktop / Codex 并登录；第三方模型仍可正常使用"); error.status = 401; throw error; }
+  catch { const error = new Error("此窗口未登录官方账号，请在 Model Router 对应窗口点击登录；第三方 API 模型仍可使用"); error.status = 401; throw error; }
   const expiry = tokenExpiry(auth.tokens.access_token);
   if (expiry && expiry <= now) {
-    const error = new Error("官方登录已过期，请打开官方客户端刷新登录后重试；无需退出账号即可改用第三方模型");
+    const error = new Error("此窗口官方登录已过期，请在 Model Router 对应窗口重新登录；无需退出即可改用第三方 API 模型");
     error.status = 401; throw error;
   }
   return auth.tokens;

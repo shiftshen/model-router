@@ -12,10 +12,12 @@
 
 ## 当前发布版本
 
+3.3.3 为稳定功能维护版：官方账号使用原官方窗口；独立 API 窗口支持第三方模型切换。撤下未验收的统一登录实验，不支持在官方原生菜单内混用订阅与 API。详见 `docs/RELEASE-3.3.3.md`。
+
 | | |
 |---|---|
-| 版本 | **3.3.2** |
-| 安装包 | `release/Model-Router-3.3.2-universal.dmg`（通用二进制：Apple Silicon + Intel） |
+| 版本 | **3.3.3** |
+| 安装包 | `release/Model-Router-3.3.3-universal.dmg`（通用二进制：Apple Silicon + Intel） |
 | 系统要求 | macOS 12.0 起 |
 | SHA-256 | 见 `release/SHA256SUMS.txt` |
 | 签名 | Developer ID Application（Chinda Lorcharoen）；正式 Release 执行 Apple notarization + staple，并用 `spctl` / `stapler` 验证 |

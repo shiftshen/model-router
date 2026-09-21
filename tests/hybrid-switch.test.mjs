@@ -7,7 +7,8 @@ import http from "node:http";
 import { portableHistory } from "../src/portable-history.mjs";
 import { accountSummary, officialAccount, officialPayload, officialTokens, officialResponseJSON } from "../src/chatgpt-auth.mjs";
 import { ModelStore, validateRoute } from "../src/model-store.mjs";
-import { buildRouterTable } from "../src/router.mjs";
+import { buildRouterTable } from "../src/router.mjs";import { windowPaths, writeWindowRegistry } from "../src/window-registry.mjs";
+
 import { createGateway } from "../src/model-gateway.mjs";
 import { ProductService } from "../src/product-service.mjs";
 const history = [
@@ -68,13 +69,13 @@ test("router accepts official and third-party turns and recovers from official q
  await store.mutate(data.revision,d=>{d.routes=[official,third];return d});
  await store.writeSecret("third-test","THIRD_ONLY");
  let fail=false,officialCalls=0;
- const server=createGateway(store,{officialUpstream:async(route,payload)=>{
+ const server=createGateway(store,{enableExperimentalOfficial:true,officialUpstream:async(route,payload)=>{
    officialCalls++;const body=officialPayload(payload,route.model);
    assert.ok(!JSON.stringify(body).includes("rs_foreign"));
    if(fail){const e=new Error("Official subscription quota exhausted");e.status=Number(fail);e.detail=fail===429?"insufficient_quota":"invalid_authentication";throw e;}
    return new Response('data: '+JSON.stringify({type:"response.completed",response:{id:"official",object:"response",status:"completed",output:[]}})+'\n\n',{headers:{"content-type":"text/event-stream"}});
  }});
- const base=await listen(server,t),token=await store.token("router");
+ const base=await listen(server,t),token=await store.token("window-router");
  const call=async model=>{const response=await fetch(base+"/router/v1/responses",{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json"},body:JSON.stringify({model,input:history,stream:false,session_id:"same-thread-switch-proof"})});return {status:response.status,body:await response.json()};};
  assert.equal(buildRouterTable((await store.read()).routes).length,2);
  assert.equal((await call("official-model")).status,200);
@@ -95,19 +96,34 @@ test("router accepts official and third-party turns and recovers from official q
  assert.ok(audit.filter(x=>x.status==="completed").every(x=>x.confirmed===true));
  assert.ok(audit.filter(x=>x.status==="failed").every(x=>x.confirmed===false));
 });
+test("each switchable window binds official requests to its own auth.json",async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),"hybrid-window-account-"));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const store=new ModelStore(root);const data=await store.read();
+ const official=validateRoute({id:"chatgpt-window",name:"Window official",protocol:"chatgpt",model:"window-model",switchable:true});
+ await store.mutate(data.revision,d=>{d.routes=[official];return d});
+ await writeWindowRegistry(root,{windows:[{id:"router",name:"常用"},{id:"w2",name:"账号 2"}]});
+ const home=windowPaths(root,"w2").homePath;await fs.mkdir(home,{recursive:true});await fs.writeFile(path.join(home,"auth.json"),"window-account");
+ let authFile="";
+ const server=createGateway(store,{enableExperimentalOfficial:true,officialUpstream:async(route,payload,signal,timeout,file)=>{authFile=file;return new Response("data: "+JSON.stringify({type:"response.completed",response:{id:"window-account",model:route.model,status:"completed",output:[]}})+"\n\n",{headers:{"content-type":"text/event-stream"}})}});
+ const base=await listen(server,t),token=await store.token("window-w2");
+ const response=await fetch(base+"/router/v1/responses",{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json"},body:JSON.stringify({model:"window-model",input:"account-proof",stream:false})});
+ assert.equal(response.status,200);
+ assert.equal(authFile,path.join(home,"auth.json"));
+});
+
 test("stream EOF is not visible until the selected route is durably confirmed",async t=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),"hybrid-stream-audit-"));t.after(()=>fs.rm(root,{recursive:true,force:true}));
   const store=new ModelStore(root);const data=await store.read();
   const official=validateRoute({id:"chatgpt-stream",name:"Official stream",protocol:"chatgpt",model:"official-stream-model",switchable:true});
   await store.mutate(data.revision,d=>{d.routes=[official];return d});
-  const server=createGateway(store,{officialUpstream:async route=>new Response(new ReadableStream({
+  const server=createGateway(store,{enableExperimentalOfficial:true,officialUpstream:async route=>new Response(new ReadableStream({
     start(controller){
       const bytes=new TextEncoder().encode('data: '+JSON.stringify({type:"response.completed",response:{id:"stream-proof",model:route.model,status:"completed",output:[]}})+'\n\n');
       for(let index=0;index<bytes.length;index+=5)controller.enqueue(bytes.slice(index,index+5));
       controller.close();
     }
   }),{headers:{"content-type":"text/event-stream"}})});
-  const base=await listen(server,t),token=await store.token("router");
+  const base=await listen(server,t),token=await store.token("window-router");
   const response=await fetch(base+"/router/v1/responses",{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json"},body:JSON.stringify({model:"official-stream-model",input:"stream-proof",stream:true,session_id:"stream-thread-proof"})});
   assert.equal(response.status,200);
   assert.match(await response.text(),/response.completed/);
@@ -140,7 +156,7 @@ test("parallel conversations keep per-request models and cancellation does not s
  const b=validateRoute({id:"chatgpt-b",name:"B",protocol:"chatgpt",model:"official-b",switchable:true});
  await store.mutate(data.revision,d=>{d.routes=[a,b];return d});
  const calls=[];let aborted=false;
- const server=createGateway(store,{officialUpstream:async(route,payload,signal)=>{
+ const server=createGateway(store,{enableExperimentalOfficial:true,officialUpstream:async(route,payload,signal)=>{
    calls.push({model:route.model,input:payload.input});
    if(payload.input==="cancel"){
      return new Response(new ReadableStream({start(controller){
@@ -151,7 +167,7 @@ test("parallel conversations keep per-request models and cancellation does not s
    await new Promise(r=>setTimeout(r,route.model==="official-a"?20:1));
    return new Response('data: '+JSON.stringify({type:"response.completed",response:{id:payload.input,model:route.model,status:"completed",output:[]}})+'\n\n');
  }});
- const base=await listen(server,t),token=await store.token("router");
+ const base=await listen(server,t),token=await store.token("window-router");
  const send=(model,input,stream=false)=>fetch(base+"/router/v1/responses",{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json"},body:JSON.stringify({model,input,stream})});
  const responses=await Promise.all([send("official-a","thread-A"),send("official-b","thread-B")]);
  const bodies=await Promise.all(responses.map(r=>r.json()));
@@ -161,6 +177,17 @@ test("parallel conversations keep per-request models and cancellation does not s
  assert.equal(aborted,true);assert.equal(calls.length,3);
 });
 
+test("legacy unscoped tokens cannot charge an official account even with large history", async t => {
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),"hybrid-unscoped-"));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const store=new ModelStore(root);const data=await store.read();
+ const route=validateRoute({id:"chatgpt-denied",name:"Official",protocol:"chatgpt",model:"denied-model",switchable:true,contextWindow:4096});
+ await store.mutate(data.revision,d=>{d.routes=[route];return d});
+ let calls=0;
+ const base=await listen(createGateway(store,{enableExperimentalOfficial:true,officialUpstream:async()=>{calls++;throw new Error("must not call")}}),t);
+ const token=await store.token("router");
+ const response=await fetch(base+"/router/v1/responses",{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json"},body:JSON.stringify({model:"denied-model",input:"large history ".repeat(10000),stream:false})});
+ const result=await response.json();assert.equal(response.status,401,JSON.stringify(result));assert.equal(result.error.code,"window_account_required");assert.equal(calls,0);
+});
 test("official stream collector retains completed message items when final response output is empty",async()=>{
  const item={type:"message",role:"assistant",content:[{type:"output_text",text:"MODEL_ASSISTANT_OK"}]};
  const events=[{type:"response.output_item.done",output_index:0,item},{type:"response.completed",response:{status:"completed",output:[]}}];

@@ -207,7 +207,7 @@ export class ModelStore {
   }
   async publicData() {
     const data = await this.read();
-    const routes = await Promise.all(data.routes.map(async (route) => {
+    const routes = await Promise.all(data.routes.filter(route => route.protocol !== "chatgpt").map(async (route) => {
       let verifiedAt = null;
       try {
         const check = JSON.parse(await fs.readFile(path.join(this.root, "checks", `${route.id}.json`), "utf8"));

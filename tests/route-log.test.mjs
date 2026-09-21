@@ -39,7 +39,7 @@ async function listen(server, context) {
 
 test("noteRoute / noteFallback 真的把记录写进磁盘（不是只有返回值）", async (context) => {
   const store = await fixture(context);
-  await noteRoute(store.root, { id: "r1", name: "路由一", endpoint: "https://opencode.ai/zen/go/v1" }, { model: "m", sessionId: "thread-123" });
+  await noteRoute(store.root, { id: "r1", name: "路由一", endpoint: "https://opencode.ai/zen/go/v1" }, { model: "m", sessionId: "thread-123", windowID: "w2" });
   await noteFallback(store.root, { id: "a", name: "A" }, { id: "b", name: "B" }, "测试原因", { sessionId: "thread-123" });
 
   const routes = JSON.parse(await fs.readFile(path.join(store.root, "route-log.json"), "utf8"));
@@ -47,6 +47,7 @@ test("noteRoute / noteFallback 真的把记录写进磁盘（不是只有返回�
   assert.equal(routes[0].route, "r1");
   assert.equal(routes[0].host, "opencode.ai", "应该记下真实域名，用户就是靠这个核对扣费方");
   assert.equal(routes[0].sessionId, "thread-123", "路由日志必须绑定具体对话，否则无法回答哪条对话在扣费");
+  assert.equal(routes[0].windowID, "w2", "路由日志必须绑定实际工作窗口，避免账号/模型归属混淆");
 
   const fallbacks = JSON.parse(await fs.readFile(path.join(store.root, "fallback-events.json"), "utf8"));
   assert.equal(fallbacks.length, 1);

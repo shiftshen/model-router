@@ -34,6 +34,11 @@ export function buildRouterTable(routes) {
   });
 }
 
+export function stableRouterTable(routes) {
+  // Preserve saved API slugs when hiding experimental official entries.
+  return buildRouterTable(routes).filter(entry => entry.route.protocol !== "chatgpt");
+}
+
 export function routerTableEntry(table, slug) {
   const wanted = String(slug ?? "").trim();
   if (!wanted) return null;

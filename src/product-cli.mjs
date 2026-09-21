@@ -293,13 +293,13 @@ async function main() {
     const update = await prepareUpdate({ currentVersion, platform, root: store.root, appPid, appPath, portable });
     return { ok: true, update, message: update.available ? (update.prepared ? `新版本 ${update.latestVersion} 已下载，准备安装` : update.message) : update.message };
   }
-  if (command === "sync-official-models") return service.syncOfficialModels();
+  if (command === "sync-official-models") throw new Error("稳定版官方模型请在原官方窗口使用；API 工作窗口不混用官方登录");
   if (command === "sync-account") {
     const synced = await service.syncOfficialAuthHomes();
     return {
       ...(await service.switchSummary()),
       message: synced.account.signedIn
-        ? `官方账号已同步到 ${synced.updated.length} 个工作窗口`
+        ? "已刷新官方入口账号状态；API 窗口不共享此账号"
         : "当前没有可同步的官方 ChatGPT 登录，请先在官方客户端登录",
     };
   }

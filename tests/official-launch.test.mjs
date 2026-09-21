@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ProductService, parseOfficialRunning } from '../src/product-service.mjs';
 import { officialDesktopEnvironment } from '../src/platform-runtime.mjs';
+import fs from 'node:fs/promises';
 
 test('official activation targets only the detected default PID and coalesces concurrent requests', async () => {
   const service = new ProductService();
@@ -61,4 +62,10 @@ test('official launch environment cannot inherit router or provider credentials'
   const env = { CODEX_HOME: '/tmp/router', CMA_ROUTE_TOKEN: 'fixture', OPENAI_BASE_URL: 'http://localhost', OPENAI_API_KEY: 'fixture', ELECTRON_RUN_AS_NODE: '1', HOME: '/Users/test', PATH: '/bin' };
   assert.deepEqual(officialDesktopEnvironment(env), { HOME: '/Users/test', PATH: '/bin' });
   assert.equal(env.CODEX_HOME, '/tmp/router');
+});
+
+test('macOS exact-PID activation sends both reopen and activate events', async () => {
+  const source = await fs.readFile(new URL('../src/platform-runtime.mjs', import.meta.url), 'utf8');
+  assert.match(source, /sendAppEvent\(0x72617070\)/);
+  assert.match(source, /sendAppEvent\(0x61637476\)/);
 });

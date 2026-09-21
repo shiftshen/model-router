@@ -209,6 +209,7 @@ struct WorkWindow: Decodable, Identifiable, Hashable {
     var running: Bool?
     var pid: Int?
     var homePath: String?
+    var officialAccount: OfficialAccount?
 }
 
 // 「专用单模型窗口」按设计不写进注册表，所以它们不在 windows 里；单独列出来才看得见、删得掉。
@@ -238,6 +239,7 @@ struct RecentRoute: Decodable, Identifiable, Hashable {
     var observedModel: String?
     var `protocol`: String?
     var fallback: Bool?
+    var windowID: String?
     var sessionId: String?
     var status: String?
     var confirmed: Bool?
@@ -360,7 +362,7 @@ final class LibraryViewModel: ObservableObject {
     // 「这个模型是不是已经开着」：官方入口看 ChatGPT Desktop 默认资料进程；其它模型看有没有窗口正跑着它
     // （起始模型就是它），再加上本地实例的状态。以前只查本地实例，所以普通模型明明开着也不亮。
     // Codex 记的是「模型 slug」，助手库里存的是条目 id。三种都对一遍，显示成可读名字。
-    func syncOfficialModels(silent: Bool = false, openWorkWindow: Bool = false) async {
+    func syncOfficialModels(silent: Bool = false) async {
         guard !busy else { return }
         busy = true
         let response = await call(["sync-official-models"], timeout: 90)
@@ -372,11 +374,7 @@ final class LibraryViewModel: ObservableObject {
         await refresh()
         if let official = switchModels.first(where: { $0.protocol == "chatgpt" }) {
             if newWindowModel.isEmpty { newWindowModel = official.id }
-            if openWorkWindow {
-                await openCodex(official.id)
-                message = "官方登录模型已经同步。当前打开的是可切换工作窗口；在 Codex 顶部可随时改选官方或普通 API。"
-                success = true
-            } else if !silent {
+            if !silent {
                 accept(response)
             }
         } else if !silent {
@@ -388,6 +386,17 @@ final class LibraryViewModel: ObservableObject {
         guard let key, !key.isEmpty else { return nil }
         if let hit = switchModels.first(where: { $0.slug == key || $0.id == key || $0.model == key }) { return hit.name }
         if let hit = models.first(where: { $0.id == key || $0.model == key }) { return hit.name }
+        return key
+    }
+
+    func modelDetail(forModelKey key: String?) -> String? {
+        guard let key, !key.isEmpty else { return nil }
+        if let hit = switchModels.first(where: { $0.slug == key || $0.id == key || $0.model == key }) {
+            return "\(hit.name) · ID \(hit.model) · \(hit.vendor) · \(hit.protocol)"
+        }
+        if let hit = models.first(where: { $0.id == key || $0.model == key }) {
+            return "\(hit.name) · ID \(hit.model) · \(hit.vendor) · \(hit.`protocol`)"
+        }
         return key
     }
 
@@ -661,7 +670,7 @@ final class LibraryViewModel: ObservableObject {
         guard !busy else { return }
         busy = true
         success = nil
-        message = "正在同步官方账号到所有工作窗口…"
+        message = "正在读取每个窗口自己的官方账号状态…"
         let response = await call(["sync-account"], timeout: 90)
         accept(response)
         busy = false
@@ -687,6 +696,7 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func openWindow(_ id: String) async {
+        guard !busy else { return }
         busy = true
         success = nil
         message = "正在打开窗口…"

@@ -24,7 +24,7 @@ function renderUsage() {
   const latest = (state.recentRoutes || [])[0];
   const routeStatus = latest
     ? (latest.confirmed ? "最近已确认：" : (latest.status === "failed" ? "最近失败：" : "最近未确认："))
-      + (latest.name || latest.route) + " · " + (latest.requestedModel || latest.model || "?") + " → " + latest.host
+       + (latest.name || latest.route) + " · 实际 ID " + (latest.observedModel || latest.requestedModel || latest.model || "?") + " → " + latest.host + (latest.windowID ? " · 窗口 " + latest.windowID : "")
     : "";
   byId("usage").textContent = [routeStatus, hosts].filter(Boolean).join(" ｜ ");
   const account = state.officialAccount || {};
@@ -37,11 +37,14 @@ function renderWindows() {
   const items = state.windows || [];
   const account = state.officialAccount || {};
   const accountText = account.signedIn ? "当前账号：" + escapeHtml(account.email || account.name || "已登录") + (account.expired ? "（已过期）" : "") : "当前未登录官方账号";
-  const official = '<article class="card official-card"><div class="card-head"><div><div class="title">官方登录与模型同步</div><div class="muted">官方客户端只负责登录与续期</div></div><span class="badge ' + (account.signedIn && !account.expired ? "ok" : "warn") + '">' + (account.signedIn ? "已登录" : "未登录") + '</span></div><div class="official-note">' + accountText + '</div><div class="official-note">同步后，常用及所有新窗口都能在同一会话中切换官方登录模型和普通 API，无需退出账号。</div><div class="card-actions"><button data-official-open="1">登录 / 更换账号</button><button data-account-sync="1">同步账号</button><button class="primary" data-open-official-work="1">同步并打开可切换窗口</button></div></article>';
+  const official = '<article class="card official-card"><div class="card-head"><div><div class="title">ChatGPT 官方原版（原历史）</div><div class="muted">默认资料 · 与工作窗口完全分开</div></div><span class="badge ' + (account.signedIn && !account.expired ? "ok" : "warn") + '">' + (account.signedIn ? "已登录" : "未登录") + '</span></div><div class="official-note">' + accountText + '</div><div class="official-note">这里保留原登录、原账号和左侧全部历史。看到欢迎/初始化页说明进了独立工作窗口，不是官方历史丢失。</div><div class="card-actions"><button class="primary" data-official-open="1">打开官方原版（原历史）</button><button data-account-sync="1">同步账号</button></div></article>';
   const managed = items.map((w) => {
     const current = state.switchModels.find((m) => m.slug === w.currentModel || m.id === w.currentModel || m.model === w.currentModel);
     const initial = routeById(w.initialModel);
-    return '<article class="card"><div class="card-head"><div><div class="title">' + escapeHtml(w.name || w.id) + '</div><div class="muted">' + escapeHtml(w.id) + '</div></div><span class="badge ' + (w.running ? "ok" : "") + '">' + (w.running ? "运行中 · PID " + (w.pid || "") : "未运行") + '</span></div><div>当前模型：' + escapeHtml(current && current.name || w.currentModel || "未选择") + '</div><div class="muted">起始模型：' + escapeHtml(initial && initial.name || w.initialModel || "自动") + '</div><div class="card-actions"><button data-win-open="' + escapeHtml(w.id) + '">打开</button>' + (w.running ? '<button data-win-close="' + escapeHtml(w.id) + '">关闭</button>' : '') + '</div></article>';
+    const account = w.officialAccount || {};
+    const accountText = "API 工作窗口 · 按所选供应商 Key 计费";
+    const modelDetail = current ? current.name + " · ID " + current.model + " · " + current.vendor + " · " + current.protocol : (w.currentModel || "未选择");
+    return '<article class="card"><div class="card-head"><div><div class="title">' + escapeHtml(w.name || w.id) + ' <span class="badge">独立历史</span></div><div class="muted">' + escapeHtml(w.id) + '</div></div><span class="badge ' + (w.running ? "ok" : "") + '">' + (w.running ? "运行中 · PID " + (w.pid || "") : "未运行") + '</span></div><div>当前模型：' + escapeHtml(current && current.name || w.currentModel || "未选择") + '</div><div class="muted mono">实际：' + escapeHtml(modelDetail) + '</div><div class="muted">起始模型：' + escapeHtml(initial && initial.name || w.initialModel || "自动") + '</div><div class="muted">' + escapeHtml(accountText) + '</div><div class="card-actions"><button data-win-open="' + escapeHtml(w.id) + '">打开</button>' + (w.running ? '<button data-win-close="' + escapeHtml(w.id) + '">关闭</button>' : '') + '</div></article>';
   }).join("");
   target.innerHTML = official + managed;
 }
@@ -191,20 +194,8 @@ document.addEventListener("click", async (event) => {
   if (!el) return;
   try {
     if (el.dataset.editModel) return openEditor(routeById(el.dataset.editModel));
-    if (el.dataset.openOfficialWork) {
-      el.disabled = true;
-      try {
-        const result = await call("sync-official-models");
-        await refresh();
-        const official = (state.switchModels || []).find((model) => model.protocol === "chatgpt");
-        if (!official) throw new Error("没有读取到官方登录模型，请先打开官方客户端完成登录");
-        accept(await call("open-codex", [official.id]));
-        setStatus("已打开可切换工作窗口；在 Codex 顶部可随时选择官方或普通 API。");
-      } finally { el.disabled = false; }
-      return;
-    }
     if (el.dataset.officialOpen) { setStatus("正在打开 ChatGPT Desktop（官方）…"); accept(await call("open-codex", ["official"])); return; }
-    if (el.dataset.accountSync) { setStatus("正在同步官方账号…"); accept(await call("sync-account")); return; }
+    if (el.dataset.accountSync) { setStatus("正在读取每个窗口自己的官方账号状态…"); accept(await call("sync-account")); return; }
     if (el.dataset.openModel) { setStatus("正在打开 Codex…"); accept(await call("open-codex", [el.dataset.openModel])); return; }
     if (el.dataset.checkModel) { setStatus("正在检查连接…"); setStatus((await call("check", [el.dataset.checkModel])).message || "连接正常"); return; }
     if (el.dataset.probeModel) { setStatus("正在真实验证…"); accept(await call("probe", [el.dataset.probeModel])); return; }
@@ -245,7 +236,6 @@ byId("modelForm").addEventListener("submit", saveEditor);
   platformInfo = await window.cma.platform();
   byId("subtitle").textContent = "Windows Preview · v" + platformInfo.version + " · " + platformInfo.arch + (platformInfo.portable ? " · Portable" : "");
   await refresh();
-  try { await call("sync-official-models"); await refresh(); } catch { /* 未登录时第三方仍可正常使用 */ }
   await checkUpdate(true);
   setInterval(() => checkUpdate(true), 6 * 60 * 60 * 1000);
 })();

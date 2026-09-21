@@ -1,0 +1,24 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { ModelStore, validateRoute } from "../src/model-store.mjs";
+import { stableRouterTable, buildRouterTable } from "../src/router.mjs";
+import { createGateway } from "../src/model-gateway.mjs";
+test("stable release hides subscription entries without renumbering API slugs or deleting stored configuration",async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),"stable-scope-"));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const store=new ModelStore(root),data=await store.read();
+ const routes=[validateRoute({id:"chatgpt-a",name:"Official",model:"same",protocol:"chatgpt"}),validateRoute({id:"third",name:"API",model:"same",protocol:"responses",endpoint:"http://127.0.0.1:1",noKey:true})];
+ await store.mutate(data.revision,d=>({...d,routes}));
+ const all=buildRouterTable((await store.read()).routes),stable=stableRouterTable((await store.read()).routes);
+ assert.equal(stable.length,1);assert.equal(stable[0].slug,all.find(e=>e.route.id==="third").slug);
+ assert.equal((await store.publicData()).routes.some(r=>r.protocol==="chatgpt"),false);
+ assert.equal((await store.read()).routes.some(r=>r.protocol==="chatgpt"),true);
+ let calls=0;const server=createGateway(store,{officialUpstream:async()=>{calls++;throw Error("should not bill")}});
+ await new Promise(r=>server.listen(0,"127.0.0.1",r));t.after(()=>new Promise(r=>{server.closeAllConnections();server.close(r)}));
+ const base="http://127.0.0.1:"+server.address().port,token=await store.token("window-router"),headers={authorization:"Bearer "+token,"content-type":"application/json"};
+ const catalog=await (await fetch(base+"/router/v1/models",{headers})).json();assert.deepEqual(catalog.data.map(m=>m.id),stable.map(m=>m.slug));
+ const response=await fetch(base+"/router/v1/responses",{method:"POST",headers,body:JSON.stringify({model:all.find(e=>e.route.protocol==="chatgpt").slug,input:"hello",stream:false})});
+ assert.equal(response.status,403);assert.equal(calls,0);
+});

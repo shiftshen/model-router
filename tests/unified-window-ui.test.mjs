@@ -25,8 +25,12 @@ test("macOS 与 Windows 不再暴露单模型工作入口", async () => {
     fs.readFile(new URL("../windows/renderer.js", import.meta.url), "utf8"),
     fs.readFile(new URL("../windows/index.html", import.meta.url), "utf8"),
   ]);
-  assert.match(mac, /同步并打开可切换窗口/);
-  assert.match(windows, /同步并打开可切换窗口/);
+  assert.match(mac, /ChatGPT 官方原版（原历史）/);
+  assert.match(mac, /独立历史完全分开/);
+  assert.match(windows, /ChatGPT 官方原版（原历史）/);
+  assert.match(windows, /独立工作窗口/);
+  assert.doesNotMatch(mac, /同步并打开可切换窗口|openWorkWindow/);
+  assert.doesNotMatch(windows, /同步并打开可切换窗口|openOfficialWork/);
   assert.doesNotMatch(mac, /本窗口改为单模型|专用单模型窗口（不复用已有窗口）/);
   assert.doesNotMatch(html, /modelSwitchable|此模型窗口允许切换模型/);
   assert.doesNotMatch(windows, /data-sync-official/);

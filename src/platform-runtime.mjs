@@ -249,8 +249,14 @@ export async function activateOfficialProcess(pid) {
     var ok=false;
     if(app && !app.isTerminated){
       var target=$.NSAppleEventDescriptor.descriptorWithProcessIdentifier(pid);
-      var event=$.NSAppleEventDescriptor.appleEventWithEventClassEventIDTargetDescriptorReturnIDTransactionID(0x61657674,0x72617070,target,-1,0);
-      var error=Ref(); event.sendEventWithOptionsTimeoutError(3,2,error);
+      function sendAppEvent(eventID){
+        var event=$.NSAppleEventDescriptor.appleEventWithEventClassEventIDTargetDescriptorReturnIDTransactionID(0x61657674,eventID,target,-1,0);
+        var error=Ref(); event.sendEventWithOptionsTimeoutError(3,2,error);
+      }
+      // Reopen restores a closed/hidden window; activate is still required by
+      // current ChatGPT Desktop builds to make this exact process frontmost.
+      sendAppEvent(0x72617070);
+      sendAppEvent(0x61637476);
       app.unhide; app.activateWithOptions(3);
       for(var i=0;i<12;i++){
         delay(0.15);

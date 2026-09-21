@@ -10,7 +10,7 @@ import { errorMessage, gatewayBuild, gatewayURL, upstream, limitedJSON } from ".
 import { cleanupPlan, cleanupWindowOnLaunch, directorySize, diskUsage } from "./disk-cleanup.mjs";
 import { readDiskPolicy } from "./disk-policy.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
-import { buildRouterTable, modelInfo, routerCatalog, routerID, routerProviderID, routerTableEntry } from "./router.mjs";
+import { stableRouterTable as buildRouterTable, modelInfo, routerCatalog, routerID, routerProviderID, routerTableEntry } from "./router.mjs";
 import { resolveRuntimeProfile } from "./runtime-profile.mjs";
 import { officialAccount, officialModels, officialTokens } from "./chatgpt-auth.mjs";
 export { resolveRuntimeProfile } from "./runtime-profile.mjs";
@@ -74,8 +74,8 @@ function composeConfig(source, marker, { model, provider, catalogPath, name, bas
   const section = lines.findIndex((line) => /^\s*\[/.test(line));
   const top = (section === -1 ? lines : lines.slice(0, section)).filter((line) => runtimeProfile === "lite"
     ? /^\s*(approval_policy|sandbox_mode|model_reasoning_effort|model_verbosity)\s*=\s*("[^"\n]*"|'[^'\n]*')\s*(#.*)?$/.test(line)
-    : !/^\s*(model|model_provider|model_catalog_json|service_tier|profile)\s*=/.test(line));
-  const routing = [`model = ${JSON.stringify(model)}`];
+    : !/^\s*(model|model_provider|model_catalog_json|service_tier|profile|cli_auth_credentials_store)\s*=/.test(line));
+  const routing = [`model = ${JSON.stringify(model)}`, 'cli_auth_credentials_store = "file"'];
   if (provider) routing.push(`model_provider = "${provider}"`, `model_catalog_json = ${JSON.stringify(catalogPath)}`);
   const inheritedSections = runtimeProfile === "lite" ? "" : (section === -1 ? "" : lines.slice(section).join("\n").trim());
   const liteFeatures = runtimeProfile === "lite" ? `[features]\napps = false\nplugins = false\nmulti_agent = false\nplugin_sharing = false\nremote_plugin = false\nin_app_browser = false\nbrowser_use = false\nbrowser_use_external = false\nmemories = false\nchronicle = false\nskill_search = false` : "";
@@ -275,25 +275,80 @@ export class ProductService {
       await fs.rm(temporary, { force: true });
     }
   }
+  // 工作窗口默认不继承官方原版账号：用户必须在这个窗口自己登录，才能使用官方模型。
+  // 旧版本留下的全局 symlink/复制会先备份再解除，避免窗口之间串账号。
+  async ensureOfficialAuthAsset(homePath) {
+    const destination = path.join(homePath, "auth.json");
+    await fs.mkdir(homePath, { recursive: true, mode: 0o700 });
+    const marker = path.join(homePath, ".model-router-window-auth-v2");
+    let marked = false;
+    try {
+      await fs.access(marker);
+      marked = true;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    // Codex/旧版助手可能在启动时重新放回指向全局 ~/.codex/auth.json 的 symlink。
+    // 标记存在也不能直接跳过：每次准备窗口都要拆掉这个全局链接，但保留窗口自己登录后生成的本地 auth.json。
+    if (marked) {
+      try {
+        const stat = await fs.lstat(destination);
+        if (stat.isSymbolicLink()) {
+          const linked = path.resolve(path.dirname(destination), await fs.readlink(destination));
+          const official = path.resolve(this.officialHome, "auth.json");
+          if (linked === official) await fs.unlink(destination);
+        }
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      return false;
+    }
+    try {
+      await fs.lstat(destination);
+      const backup = destination + ".before-window-auth-v2-" + Date.now();
+      await fs.rename(destination, backup);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    await fs.writeFile(marker, "window-local-auth\n", { mode: 0o600 });
+    return true;
+  }
   async syncOfficialAuthHomes() {
     const account = await officialAccount({ file: path.join(this.officialHome, "auth.json") });
-    if (!account.signedIn) return { account, updated: [] };
+    if (!account.signedIn) return { account, checked: [] };
     const registry = await readWindowRegistry(this.store.root);
-    const updated = [];
+    const checked = [];
     for (const entry of registry.windows) {
       const homePath = windowPaths(this.store.root, entry.id).homePath;
       try {
         await fs.access(homePath);
-        await this.syncOfficialAuthAsset(homePath);
-        updated.push(entry.id);
+        checked.push(entry.id);
       } catch (error) {
         if (error.code !== "ENOENT") throw error;
       }
     }
-    return { account, updated };
+    return { account, checked };
+  }
+  async officialModelsForAllHomes() {
+    const homes = [this.officialHome];
+    const registry = await readWindowRegistry(this.store.root);
+    for (const entry of registry.windows) homes.push(windowPaths(this.store.root, entry.id).homePath);
+    const bySlug = new Map();
+    let lastError = null;
+    for (const home of [...new Set(homes)]) {
+      try {
+        for (const model of await officialModels(home)) {
+          if (!bySlug.has(model.slug)) bySlug.set(model.slug, model);
+        }
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!bySlug.size && lastError) throw lastError;
+    return [...bySlug.values()];
   }
   async syncSharedRuntimeAssets(homePath, runtimeProfile = "full") {
-    try { await this.syncOfficialAuthAsset(homePath); }
+    try { await this.ensureOfficialAuthAsset(homePath); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
     if (runtimeProfile === "lite") {
       for (const name of liteBlockedRuntimeAssets) await removeManagedAsset(path.join(homePath, name));
@@ -480,7 +535,7 @@ export class ProductService {
   }
 
   async syncOfficialModels() {
-    const models = await officialModels(this.officialHome);
+    const models = await this.officialModelsForAllHomes();
     const data = await this.store.read();
     await this.store.mutate(data.revision, library => {
       for (const model of models) {
@@ -499,7 +554,7 @@ export class ProductService {
     return {
       ...(await this.store.publicData()),
       ...(await this.switchSummary()),
-      message: "已同步 " + models.length + " 个官方登录模型和账号状态（" + authSync.updated.length + " 个工作窗口）。在每个会话的模型菜单中切换；无需退出账号。",
+      message: "已读取官方原版与各工作窗口的账号状态，并同步 " + models.length + " 个官方模型目录。账号不会跨窗口复制；在目标窗口内登录后才会使用该窗口账号。",
     };
   }
   async discover(route) {
@@ -651,7 +706,9 @@ export class ProductService {
       if (!detected?.changed) throw error;
       output = await call();
     }
-    if (!output.includes("MODEL_ASSISTANT_OK")) throw new Error("服务已响应，但未返回预期验证文本；请核对模型与额度");
+    // 必须返回验证词；HTTP 200 或空 output 不能证明推理成功。
+    const verified = output.trim() === "MODEL_ASSISTANT_OK";
+    if (!verified) throw new Error("服务已响应，但未返回准确的验证文本；不能确认真实推理通过");
     const current = await this.store.route(id);
     const result = { testedAt: new Date().toISOString(), latencyMs: Date.now() - started, model: current.model, endpoint: current.endpoint, protocol: current.protocol, credentialVersion: await this.store.credentialVersion(current.credentialID), ok: true };
     await atomicJSON(path.join(this.store.root, "checks", `${id}.json`), result);
@@ -867,7 +924,7 @@ export class ProductService {
       diskCleanup: prepared.diskCleanup,
       message: (options.continueExisting
         ? "已打开原会话的独立副本；后续工作保存在此模型窗口，原官方会话不受影响。"
-        : `已为「${prepared.route.name}」打开兼容窗口（PID ${child.pid}）：窗口内可从 Codex 顶部切换官方登录模型和普通 API。`) + cleaned,
+        : `已为「${prepared.route.name}」打开兼容窗口（PID ${child.pid}）：窗口内可从 Codex 顶部切换自定义 API 模型。`) + cleaned,
     };
   }
   switchPaths() {
@@ -915,6 +972,7 @@ export class ProductService {
         running: running.has(entry.id),
         pid: running.get(entry.id) || 0,
         homePath: windowPaths(this.store.root, entry.id).homePath,
+        officialAccount: await officialAccount({ file: path.join(windowPaths(this.store.root, entry.id).homePath, "auth.json") }),
       }))),
       orphans,
       routerRunning: running.has(legacyWindowID),
@@ -1087,7 +1145,8 @@ export class ProductService {
       ...process.env,
       CODEX_HOME: prepared.homePath,
       CODEX_ELECTRON_USER_DATA_PATH: prepared.userDataPath,
-      CMA_ROUTE_TOKEN: await this.store.token(routerID),
+      // 每个工作窗口使用自己的访问令牌，网关才能把官方请求绑定到这个窗口的 auth.json。
+      CMA_ROUTE_TOKEN: await this.store.token("window-" + prepared.id),
     };
     delete environment.OPENAI_API_KEY;
     delete environment.OPENAI_BASE_URL;

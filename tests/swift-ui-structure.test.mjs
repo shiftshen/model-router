@@ -52,9 +52,13 @@ test("macOS 与 Windows 必须显示官方账号、提供账号同步，并区�
   const renderer = await fs.readFile(new URL("../windows/renderer.js", import.meta.url), "utf8");
   const html = await fs.readFile(new URL("../windows/index.html", import.meta.url), "utf8");
   assert.match(source, /library\.officialAccount\.label/);
-  assert.match(source, /Button\("更换账号"\)/);
+  assert.match(source, /Button\("打开官方原版 \/ 更换账号"\)/);
+  assert.match(source, /Button\("打开官方原版（原历史）"\)/);
+  assert.doesNotMatch(source, /Button\("仅同步官方模型"\)/);
+  assert.doesNotMatch(source, /window-login-/);
   assert.match(source, /library\.syncAccount\(\)/);
   assert.match(source, /只有“已确认”表示对应上游成功完成请求/);
+  assert.match(source, /实际 ID/);
   assert.match(modelLibrary, /response\.officialAccount/);
   assert.match(modelLibrary, /"sync-account"/);
   assert.match(html, /id="accountStatus"/);

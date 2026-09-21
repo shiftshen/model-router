@@ -22,12 +22,11 @@ test('Full to Lite unlinks shared assets without changing global originals; Full
   const service = new ProductService(); service.officialHome = official;
   await service.syncSharedRuntimeAssets(home, 'full');
   const authPath = path.join(home, 'auth.json');
-  assert.equal(await fs.readFile(authPath, 'utf8'), 'original');
-  if (process.platform === 'win32') assert.equal((await fs.lstat(authPath)).isSymbolicLink(), false);
-  else assert.equal((await fs.lstat(authPath)).isSymbolicLink(), true);
+  // 工作窗口默认未登录，不能继承全局官方账号。
+  await assert.rejects(fs.lstat(authPath), { code: 'ENOENT' });
   await fs.writeFile(path.join(official, 'auth.next'), 'replacement');
   await fs.rename(path.join(official, 'auth.next'), path.join(official, 'auth.json'));
-  if (process.platform !== 'win32') assert.equal(await fs.readFile(authPath, 'utf8'), 'replacement', 'macOS link must follow atomic account replacement immediately');
+  await assert.rejects(fs.lstat(authPath), { code: 'ENOENT' });
   await service.syncOfficialAuthAsset(home);
   assert.equal(await fs.readFile(authPath, 'utf8'), 'replacement');
   await service.syncSharedRuntimeAssets(home, 'lite');
@@ -39,7 +38,7 @@ test('Full to Lite unlinks shared assets without changing global originals; Full
   assert.equal(await fs.readFile(path.join(home, 'AGENTS.md'), 'utf8'), 'original');
 });
 
-test('account sync updates every registered work window and returns safe account status', async (t) => {
+test('account status checks every registered work window without copying the official account', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'router-account-sync-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const store = new ModelStore(path.join(root, 'store')); await store.read();
@@ -50,11 +49,11 @@ test('account sync updates every registered work window and returns safe account
   for (const id of ['router','w2']) await fs.mkdir(windowPaths(store.root, id).homePath, {recursive:true});
   const service = new ProductService(store); service.officialHome = official;
   const result = await service.syncOfficialAuthHomes();
-  assert.deepEqual(result.updated, ['router','w2']);
+  assert.deepEqual(result.checked, ['router','w2']);
   assert.equal(result.account.email, 'owner@example.com');
   assert.equal(result.account.accountSuffix, '12345678');
   assert.ok(!JSON.stringify(result.account).includes('access_token'));
-  for (const id of result.updated) assert.equal(JSON.parse(await fs.readFile(path.join(windowPaths(store.root, id).homePath, 'auth.json'), 'utf8')).tokens.account_id, 'account-12345678');
+  for (const id of result.checked) await assert.rejects(fs.lstat(path.join(windowPaths(store.root, id).homePath, 'auth.json')), { code: 'ENOENT' });
 });
 
 test('Lite config remains bounded even with huge top-level instructions and hundreds of sections', () => {
@@ -72,4 +71,36 @@ test('Lite retains core tools inside functions namespace and mixed instruction c
   assert.equal(p.tools[0].tools[0].name, 'exec_command');
   assert.equal(p.tools[0].tools.length, 1);
   assert.ok(p.instructions?.includes(text) || p.input.some((item) => item.content?.some((part) => part.text === text)));
+});
+
+test('old inherited auth is backed up and removed on first window migration', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'router-auth-migrate-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const official = path.join(root, 'official');
+  const home = path.join(root, 'window');
+  await fs.mkdir(official); await fs.mkdir(home);
+  const oldAuth = JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'must-not-be-inherited' } });
+  await fs.writeFile(path.join(home, 'auth.json'), oldAuth, { mode: 0o600 });
+  const service = new ProductService(); service.officialHome = official;
+  await service.syncSharedRuntimeAssets(home, 'lite');
+  await assert.rejects(fs.lstat(path.join(home, 'auth.json')), { code: 'ENOENT' });
+  assert.equal(await fs.readFile(path.join(home, '.model-router-window-auth-v2'), 'utf8'), 'window-local-auth\n');
+  const backups = (await fs.readdir(home)).filter((name) => name.startsWith('auth.json.before-window-auth-v2-'));
+  assert.equal(backups.length, 1);
+  assert.equal(await fs.readFile(path.join(home, backups[0]), 'utf8'), oldAuth);
+});
+
+test('marked work window removes a reintroduced global auth symlink on reopen', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'router-auth-reopen-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const official = path.join(root, 'official');
+  const home = path.join(root, 'window');
+  await fs.mkdir(official); await fs.mkdir(home);
+  await fs.writeFile(path.join(official, 'auth.json'), 'official-auth');
+  await fs.writeFile(path.join(home, '.model-router-window-auth-v2'), 'window-local-auth\n');
+  await fs.symlink(path.join(official, 'auth.json'), path.join(home, 'auth.json'));
+  const service = new ProductService(); service.officialHome = official;
+  await service.syncSharedRuntimeAssets(home, 'lite');
+  await assert.rejects(fs.lstat(path.join(home, 'auth.json')), { code: 'ENOENT' });
+  assert.equal(await fs.readFile(path.join(home, '.model-router-window-auth-v2'), 'utf8'), 'window-local-auth\n');
 });

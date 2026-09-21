@@ -78,9 +78,6 @@ struct ModelLibraryView: View {
         .onAppear { sizeWindowOnce() }
         .task {
             await library.refresh()
-            // 登录有效时自动把官方模型加入统一目录；未登录时静默跳过，
-            // 第三方模型和已有窗口照常可用。
-            await library.syncOfficialModels(silent: true)
             await library.openSwitch()
             // 启动时就把磁盘占用算出来，底部的状态条才有内容。
             await library.refreshDisk()
@@ -307,12 +304,12 @@ struct ModelLibraryView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 7) {
                 Image(systemName: "app.badge.checkmark").foregroundStyle(.blue)
-                Text("官方登录与模型同步").font(.system(size: 15, weight: .semibold))
-                Text("授权").font(.system(size: 10, weight: .semibold)).foregroundStyle(.blue)
+                Text("ChatGPT 官方原版（原历史）").font(.system(size: 15, weight: .semibold))
+                Text("默认资料").font(.system(size: 10, weight: .semibold)).foregroundStyle(.blue)
                     .padding(.horizontal, 6).padding(.vertical, 2).background(Color.blue.opacity(0.12), in: Capsule())
                 Spacer()
             }
-            Text("官方客户端只负责登录和续期。同步后，常用及所有新窗口都能在同一会话中切换官方登录模型和普通 API。")
+            Text("这里打开 ChatGPT 的默认资料：保留原登录、原账号和左侧全部历史。它与下方可切换工作窗口的独立历史完全分开。")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 6) {
                 Image(systemName: library.officialAccount.signedIn ? "person.crop.circle.badge.checkmark" : "person.crop.circle.badge.exclamationmark")
@@ -321,16 +318,14 @@ struct ModelLibraryView: View {
             }
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(library.officialAccount.signedIn ? .blue : .orange)
-            Text("工作请进入下方可切换窗口；无需退出 ChatGPT 账号")
+            Text("看到欢迎/初始化页说明进了独立工作窗口，不是官方历史丢失")
                 .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             HStack(spacing: 8) {
-                Button("登录 / 续期") { Task { await library.openCodex("official") } }
-                    .controlSize(.small).disabled(library.busy)
-                Button("同步账号") { Task { await library.syncAccount() } }
-                    .controlSize(.small).disabled(library.busy)
-                Button("同步并打开可切换窗口") { Task { await library.syncOfficialModels(openWorkWindow: true) } }
+                Button("打开官方原版（原历史）") { Task { await library.openCodex("official") } }
                     .buttonStyle(.borderedProminent).controlSize(.small).disabled(library.busy)
+                Button("刷新官方账号状态") { Task { await library.syncAccount() } }
+                    .controlSize(.small).disabled(library.busy)
                 Spacer()
             }
         }
@@ -338,7 +333,7 @@ struct ModelLibraryView: View {
         .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
         .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.blue.opacity(0.32), lineWidth: 1))
-        .help("官方原版只用于登录与续期；实际开发统一进入可切换窗口。")
+        .help("只打开 ChatGPT 默认资料，不携带 Model Router 的 CODEX_HOME 或 --user-data-dir；原历史不会与工作窗口混在一起。")
     }
 
     private func windowCard(_ window: WorkWindow) -> some View {
@@ -347,6 +342,8 @@ struct ModelLibraryView: View {
             HStack(spacing: 7) {
                 Circle().fill(running ? Color.green : Color.secondary.opacity(0.35)).frame(width: 8, height: 8)
                 Text(window.name).font(.system(size: 15, weight: .semibold))
+                Text("独立历史").font(.system(size: 10, weight: .semibold)).foregroundStyle(.purple)
+                    .padding(.horizontal, 6).padding(.vertical, 2).background(Color.purple.opacity(0.10), in: Capsule())
                 if window.legacy == true {
                     Text("内置").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
                         .padding(.horizontal, 6).padding(.vertical, 2).background(Color.secondary.opacity(0.14), in: Capsule())
@@ -371,8 +368,12 @@ struct ModelLibraryView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("当前模型：\(library.displayName(forModelKey: window.currentModel) ?? "打开后在 Codex 顶部选择")")
                     .font(.system(size: 12, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                Text("实际：\(library.modelDetail(forModelKey: window.currentModel) ?? "打开后读取 Codex 当前选择")")
+                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 Text("启动时：\(library.displayName(forModelKey: window.initialModel) ?? "自动")")
                     .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                Text("API 工作窗口 · 按所选供应商 Key 计费")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
             HStack(spacing: 8) {
@@ -389,7 +390,6 @@ struct ModelLibraryView: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(running ? Color.green.opacity(0.35) : Color.secondary.opacity(0.15), lineWidth: 1))
         .contentShape(RoundedRectangle(cornerRadius: 10))
-        .onTapGesture { Task { await library.openWindow(window.id) } }
         .help(window.homePath ?? "")
     }
 
@@ -468,9 +468,9 @@ struct ModelLibraryView: View {
                 Image(systemName: library.officialAccount.signedIn ? "person.crop.circle.fill.badge.checkmark" : "person.crop.circle.badge.exclamationmark")
                     .foregroundStyle(library.officialAccount.signedIn ? .blue : .orange).font(.caption)
                 Text(library.officialAccount.label).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                Button("更换账号") { Task { await library.openCodex("official") } }
+                Button("打开官方原版 / 更换账号") { Task { await library.openCodex("official") } }
                     .controlSize(.small).disabled(library.busy)
-                Button("同步账号") { Task { await library.syncAccount() } }
+                Button("刷新官方账号状态") { Task { await library.syncAccount() } }
                     .controlSize(.small).disabled(library.busy)
                 Divider().frame(height: 16)
                 if let route = library.recentRoutes.first {
@@ -478,7 +478,7 @@ struct ModelLibraryView: View {
                         .foregroundStyle(route.confirmed == true ? .green : (route.status == "failed" ? .red : .orange))
                         .font(.caption)
                     Text(route.confirmed == true
-                         ? "已确认：\(route.name ?? route.route) · \(route.requestedModel ?? route.model ?? "?") → \(route.host)"
+                         ? "已确认：\(route.name ?? route.route) · 实际 ID \(route.observedModel ?? route.requestedModel ?? route.model ?? "?") → \(route.host)\(route.windowID?.isEmpty == false ? " · 窗口 \(route.windowID!)" : "")"
                          : "\(route.status == "failed" ? "失败" : "未确认")：\(route.name ?? route.route) · \(route.requestedModel ?? route.model ?? "?")")
                         .font(.caption).foregroundStyle(route.confirmed == true ? .green : (route.status == "failed" ? .red : .orange)).lineLimit(1)
                         .help("只有“已确认”表示对应上游成功完成请求；模型自己的文字自述不作为切换证据。")
@@ -876,15 +876,14 @@ struct ModelLibraryView: View {
             Spacer(minLength: 0)
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "macwindow.on.rectangle").foregroundStyle(.secondary)
-                Text("所有工作窗口都能在同一会话中切换官方登录模型和普通 API。官方额度不足时选第三方；第三方不合适时切回官方，无需退出账号。").font(.caption).foregroundStyle(.secondary)
+                Text("API 工作窗口可在同一会话中切换自定义模型；官方模型请使用官方原版入口，账号与历史保持独立。").font(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 if model.id != "official" { Button(model.archived ? "恢复模型" : "归档") { Task { await library.archive() } } }
                 Spacer()
                 Button(model.protocol == "oauth" ? "检查登录" : "检查连接") { Task { await library.perform("check") } }.disabled(!model.ready || model.archived)
                 if model.protocol == "oauth" {
-                    Button("登录 / 续期") { Task { await library.openCodex(model.id) } }
-                    Button("同步并打开可切换窗口") { Task { await library.syncOfficialModels(openWorkWindow: true) } }.buttonStyle(.borderedProminent)
+                    Button("打开官方原版（原历史）") { Task { await library.openCodex(model.id) } }.buttonStyle(.borderedProminent)
                 } else {
                     Button("真实验证") { Task { await library.perform("probe") } }.disabled(!model.ready || model.archived).help("发送短测试请求，消耗少量供应商额度")
                     Button("打开可切换窗口") { Task { await library.openCodex(model.id) } }.buttonStyle(.borderedProminent).disabled(!model.ready || model.archived)
