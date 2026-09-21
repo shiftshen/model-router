@@ -17,7 +17,7 @@ function route(id, model, extra = {}) {
 
 async function fixture(context) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "cma-router-"));
-  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  context.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }));
   return new ModelStore(root);
 }
 
