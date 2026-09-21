@@ -39,3 +39,10 @@ jobs:
           "$APP/Contents/Resources/node" -e 'if (process.arch !== (process.env.RUNNER_ARCH === "ARM64" ? "arm64" : "x64")) process.exit(1)'
           /usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' "$APP/Contents/Info.plist" | grep -qx '12.0'
           codesign --verify --deep --strict "$APP"
+      - name: 保存已验证 Universal App
+        run: ditto -c -k --keepParent "build/Model Router.app" build/Model-Router-Universal-App.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Model-Router-macOS-universal
+          path: build/Model-Router-Universal-App.zip
+          if-no-files-found: error
