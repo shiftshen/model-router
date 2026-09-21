@@ -9,6 +9,7 @@ NODE_VERSION="24.20.0"
 # 之前在 macOS 26 的机器上构建，二进制里写的就是「最低要求 26.0」——
 # Info.plist 写 14.0 也没用，老系统上根本加载不起来。
 DEPLOYMENT_TARGET="12.0"
+SDK_PATH="${MACOS_SDK_PATH:-$(xcrun --show-sdk-path)}"
 
 mkdir -p "$BUILD/slices" "$APP/Contents/MacOS" "$APP/Contents/Resources/runtime"
 
@@ -28,6 +29,7 @@ SLICES=()
 for ARCH in arm64 x86_64; do
   OUT="$BUILD/slices/CodexModelAssistant-$ARCH"
   if swiftc \
+      -sdk "$SDK_PATH" \
       -target "$ARCH-apple-macos$DEPLOYMENT_TARGET" \
       -parse-as-library -O \
       -framework SwiftUI -framework AppKit \
