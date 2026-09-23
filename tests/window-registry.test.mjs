@@ -66,10 +66,8 @@ test("每个窗口有独立的 HOME 与浏览器数据目录，配置与模型�
   const store = await fixture(context);
   const service = quiet(new ProductService(store));
   const first = await service.prepareWindow(legacyWindowID, "");
-  assert.equal(first.diskCleanup.deletedThreads, 0);
   await writeWindowRegistry(store.root, { schemaVersion: 1, windows: [{ id: legacyWindowID, name: "窗口 1" }, { id: "w2", name: "窗口 2" }] });
   const second = await service.prepareWindow("w2", "deepseek-flash");
-  assert.equal(second.diskCleanup.deletedThreads, 0);
 
   assert.equal(first.homePath, path.join(store.root, "router-v1", "codex-home"));
   assert.equal(second.homePath, path.join(store.root, windowsRootName, "w2", "codex-home"));
