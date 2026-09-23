@@ -58,6 +58,10 @@ Windows 版随 3.0 品牌统一，目标 Windows 10/11 x64，仍标记为 Previe
 
 ## 功能
 
+### Laya / Jev 路由实验
+
+仓库提供独立的有限决策核心 `model-intelligence/src/routing-index.mjs`：复杂任务可先由本地 Laya Typed-Decisions 给出受约束画像，低置信或不可用时调用 Jev；两者均无法产生合法画像时不自动选择模型。现阶段它用于受控验证，桌面窗口仍以用户明确选择的模型为准。真实配对结果、运行条件和发布限制见 [`docs/ROUTING-LAYA-JEV.md`](docs/ROUTING-LAYA-JEV.md)。
+
 - 第三方模型库与官方 ChatGPT 登录：DeepSeek 等走各自的官方接口，官方入口用 ChatGPT OAuth，互不影响。
 - **3.1.0 官方 App 动态兼容**：官方只保留一个「ChatGPT Desktop（官方）」入口。macOS 优先发现 `/Applications/ChatGPT.app`，并按 bundle id `com.openai.codex` 动态发现、兼容旧 `/Applications/Codex.app`；官方频繁更新 App 路径/内部 Framework 时不再依赖旧固定路径。
 - **2.8.4 首页固定官方入口**：窗口区第一张卡就是「ChatGPT Desktop（官方）」，右上角菜单也有同名入口。不要再靠 Dock 的 ChatGPT/Codex 图标区分，因为官方与可切换窗口来自同一个 App bundle；从这张卡进入就一定走默认资料。

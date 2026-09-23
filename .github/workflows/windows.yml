@@ -59,6 +59,8 @@ jobs:
           if ($failed.Count -gt 0) {
             throw "Windows tests failed: $($failed -join ', ')"
           }
+      - name: Model intelligence tests on Windows
+        run: node --test model-intelligence/tests/planner.test.mjs model-intelligence/tests/laya-client.test.mjs model-intelligence/tests/decision-runtime.test.mjs
       - name: Build Windows installers
         shell: powershell
         run: |

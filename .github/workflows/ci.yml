@@ -22,6 +22,8 @@ jobs:
           /usr/bin/sqlite3 --version
       - name: Node 回归测试
         run: npm test
+      - name: 模型智能路由回归测试
+        run: node --test model-intelligence/tests/planner.test.mjs model-intelligence/tests/laya-client.test.mjs model-intelligence/tests/decision-runtime.test.mjs
       - name: 获取 Universal Node 运行时
         run: zsh scripts/fetch-runtime.sh
       - name: 构建 Universal macOS App
