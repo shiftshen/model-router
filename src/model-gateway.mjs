@@ -1,4 +1,5 @@
 import http from "node:http";
+import https from "node:https";
 import fs from "node:fs";
 import os from "node:os";
 // 注意：node:fs 是回调版。之前两个「留痕」函数用 await fs.readFile/fs.writeFile 写文件，
@@ -9,6 +10,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import dns from "node:dns/promises";
 import { ModelStore } from "./model-store.mjs";
 import { LocalQueue } from "./local-queue.mjs";
 import { buildRouterTable, stableRouterTable, routerID, routerTableEntry } from "./router.mjs";
@@ -255,6 +257,47 @@ function isOpencodeEndpoint(endpoint) {
   try { return new URL(endpoint).hostname.endsWith("opencode.ai"); } catch { return false; }
 }
 
+// 某些网络环境下 macOS 的默认 getaddrinfo 只返回不可用的 IPv6 结果，
+// Node fetch 会直接报 ENOTFOUND；vdamo 的 IPv4 DNS 记录本身仍然可用。
+// 只给 vdamo 请求使用 IPv4 lookup，不改变官方、其它供应商或本地服务的网络行为。
+function isVdamoEndpoint(endpoint) {
+  try { return new URL(endpoint).hostname === "api.vdamo.com"; } catch { return false; }
+}
+
+async function fetchVdamoIPv4(url, options = {}) {
+  const target = new URL(url);
+  const [address] = await dns.resolve4(target.hostname);
+  // When connecting to the resolved IP directly, Node would otherwise derive
+  // Host from that IP. Cloudflare then may route the request to the wrong
+  // virtual host and return 421 Misdirected Request. Preserve the provider
+  // hostname for both HTTP routing and TLS SNI.
+  const headers = { ...(options.headers || {}), host: target.host };
+  return new Promise((resolve, reject) => {
+    const request = https.request({
+      hostname: address,
+      port: target.port || 443,
+      path: `${target.pathname}${target.search}`,
+      method: options.method || "GET",
+      headers,
+      servername: target.hostname,
+    }, (response) => {
+      resolve(new Response(Readable.toWeb(response), {
+        status: response.statusCode,
+        headers: response.headers,
+      }));
+    });
+    const abort = () => request.destroy(new Error("请求已取消"));
+    if (options.signal) {
+      if (options.signal.aborted) return abort();
+      options.signal.addEventListener("abort", abort, { once: true });
+      request.once("close", () => options.signal.removeEventListener("abort", abort));
+    }
+    request.once("error", reject);
+    if (options.body) request.write(options.body);
+    request.end();
+  });
+}
+
 // 静默 fallback 会悄悄花用户的钱：从订阅制切到按量计费，界面上完全看不出来。
 // 今天就发生过一次——opencode 因为缺一个请求头全部失败，几百次请求全部落到
 // DeepSeek 官方按量扣费，用户只看到「官网的量一直在涨」，却不知道是谁在花。
@@ -393,10 +436,14 @@ export async function upstream(route, key, suffix, body, timeout = 3600000, sign
     headers["anthropic-version"] = "2023-06-01";
   } else if (key) headers.authorization = `Bearer ${key}`;
   if (isOpencodeEndpoint(route.endpoint)) headers["x-opencode-session"] = opencodeSessionFor(route, sessionId);
-  const response = await fetch(`${route.endpoint}/${suffix}`, {
+  const requestURL = `${route.endpoint}/${suffix}`;
+  const requestOptions = {
     method: body ? "POST" : "GET", headers, body: body ? JSON.stringify(body) : undefined,
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)].filter(Boolean)) : AbortSignal.timeout(timeout), redirect: "error",
-  });
+  };
+  const response = isVdamoEndpoint(route.endpoint)
+    ? await fetchVdamoIPv4(requestURL, requestOptions)
+    : await fetch(requestURL, requestOptions);
   if (!response.ok) {
     throw upstreamFailure(response.status, await failureDetail(response));
   }
@@ -668,6 +715,11 @@ export function createGateway(store = new ModelStore(), options = {}) {
           response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
           sseStream = true;
           response.write(": compacting\n\n");
+          heartbeat = setInterval(() => response.write(": waiting\n\n"), 5000);
+        } else if (payload.stream && response.headersSent && !heartbeat) {
+          // Responses API may have sent headers before the gateway discovers
+          // that compaction is needed. Keep the stream alive during summarizing
+          // instead of making the client show a false reconnect state.
           heartbeat = setInterval(() => response.write(": waiting\n\n"), 5000);
         }
         // 一轮压缩通常够；不够就再压一轮（最多三轮），实在压不下去才交给供应商判。
