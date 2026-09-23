@@ -55,10 +55,10 @@ export function usableWindow(value) {
 export function resolveContextWindow(route) {
   const explicit = usableWindow(route?.contextWindow);
   const known = knownContextWindow(route?.model);
-  // 实测过的窗口是这个模型的事实，不是偏好设置：任何占位值都盖不过它。
-  if (known?.verified) return known.window;
   // 用户自己填的非占位值优先——128K 对不少模型确实是正确答案。
   if (explicit && explicit !== legacyPlaceholderWindow) return explicit;
+  // 没有用户明确设置时，才使用本机实测值。
+  if (known?.verified) return known.window;
   // 占位符或者根本没填：表里有据可查就用表，否则用兜底值。
   if (known?.window) return known.window;
   return explicit || defaultContextWindow;

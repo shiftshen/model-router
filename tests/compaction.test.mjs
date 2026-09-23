@@ -141,10 +141,10 @@ test("切换模型导致超窗时，网关先压缩再继续，而不是报错",
 });
 
 
-test("窗口不写死：按模型匹配真实值，查不到才用 512K 兜底", () => {
+test("窗口不写死：按模型匹配真实值，明确设置时尊重用户值", () => {
   // 官方模型：实测过 272K，任何占位值都盖不过这个事实
   assert.equal(resolveContextWindow({ model: "gpt-6-astra", contextWindow: 128000 }), 272000);
-  assert.equal(resolveContextWindow({ model: "gpt-5.6-sol", contextWindow: 200000 }), 272000);
+  assert.equal(resolveContextWindow({ model: "gpt-5.6-sol", contextWindow: 200000 }), 200000);
   // 用户自己填的非占位值优先——128K 对不少模型确实是正确答案
   assert.equal(resolveContextWindow({ model: "agnes-2.5-flash", contextWindow: 128000 }), 128000);
   assert.equal(resolveContextWindow({ model: "deepseek-flash", contextWindow: 1000000 }), 1000000);

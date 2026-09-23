@@ -177,7 +177,9 @@ export async function findMacChatGPTAppBundle() {
   let dynamic = [];
   try {
     const query = 'kMDItemCFBundleIdentifier == "com.openai.codex"c || kMDItemFSName == "ChatGPT.app"c || kMDItemFSName == "Codex.app"c';
-    const { stdout } = await execFileAsync("/usr/bin/mdfind", [query], { maxBuffer: 2 * 1024 * 1024 });
+    // Spotlight 可能在官方 ChatGPT 运行时长时间卡住；启动 API 窗口不能依赖它无限等待。
+    // 查询失败/超时后仍会走下面的固定 /Applications 回退候选。
+    const { stdout } = await execFileAsync("/usr/bin/mdfind", [query], { timeout: 2000, maxBuffer: 2 * 1024 * 1024 });
     dynamic = String(stdout).split("\n").map((line) => line.trim()).filter((line) => /\.app$/i.test(line));
   } catch { }
   for (const appPath of rankMacChatGPTAppCandidates(dynamic)) {
@@ -414,4 +416,3 @@ export async function platformDiskRoot(target = os.homedir()) {
   const parsed = path.parse(path.resolve(target));
   return parsed.root || "C:\\";
 }
-

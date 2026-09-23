@@ -398,7 +398,7 @@ export class ProductService {
   // 「专用单模型窗口」按设计不写进注册表，于是它们既不在窗口面板里、也没有入口关掉或删掉。
   // 实测磁盘上已经堆了 11 个、3.8 GB——用户只能看着空间变少却找不到是谁占的。
   // 这里把它们读出来，交给界面显示与管理。
-  async unmanagedWindows() {
+  async unmanagedWindows({ measure = true } = {}) {
     const running = await this.runningWindows();
     const found = [];
     for (const slot of ["instances-v2", "continuations-v1"]) {
@@ -421,8 +421,10 @@ export class ProductService {
       }
     }
     if (!found.length) return found;
-    // du 要遍历好几个 GB，而 switch-status 每次切回助手都会被调一次——不缓存就会把界面卡住。
-    // 目录大小变化很慢，30 秒内直接复用上一次的结果。
+    // 普通状态刷新不能递归遍历历史目录：这些目录可能有数 GB、数千个文件。
+    // 只有磁盘管理/删除流程明确要求 measure 时才计算大小。
+    if (!measure) return found;
+    // du 要遍历好几个 GB，目录大小变化很慢，30 秒内直接复用上一次的结果。
     const now = Date.now();
     if (now - unmanagedSizeCache.at > 30000) {
       try {
@@ -440,14 +442,14 @@ export class ProductService {
   async deleteUnmanagedWindow(id = "") {
     const wanted = String(id ?? "").trim();
     if (!wanted) throw new Error("请指定要删除的窗口");
-    const found = await this.unmanagedWindows();
+    const found = await this.unmanagedWindows({ measure: true });
     const target = found.find((entry) => entry.id === wanted);
     if (!target) throw new Error(`没有找到窗口「${wanted}」`);
     if (target.running) throw new Error(`「${wanted}」正在运行，请先关闭它再删除`);
     await fs.rm(target.root, { recursive: true, force: true });
     return {
       ...(await this.switchSummary()),
-      unmanaged: await this.unmanagedWindows(),
+      unmanaged: await this.unmanagedWindows({ measure: false }),
       message: `已删除窗口「${wanted}」（${Math.round(target.bytes / 1024 / 1024)} MB）。这是一次性资料，删掉就没了。`,
     };
   }
@@ -466,7 +468,10 @@ export class ProductService {
     return orphans;
   }
   async migrateSecrets() {
-    for (const [id, relative] of [["deepseek", ".openclaw/secrets/codex-providers/deepseek_api_key"], ["agnes", ".openclaw/secrets/openclaw-runtime/secret-005"]]) {
+    // DeepSeek 是用户可选的第三方按量接口，默认不得从其他工具的密钥目录
+    // 静默导入。否则模型库看似“已配置”，用户却不知道请求会走哪个账号。
+    // Agnes 是本机已部署服务，仍保留兼容迁移。
+    for (const [id, relative] of [["agnes", ".openclaw/secrets/openclaw-runtime/secret-005"]]) {
       if (await this.store.secret(id)) continue;
       const marker = path.join(this.store.root, `.migrated-${id}`);
       try { await fs.access(marker); continue; } catch { }
@@ -521,6 +526,7 @@ export class ProductService {
       "--mmproj", mmproj,
       "--cache-type-k", "q4_0",
       "--cache-type-v", "q4_0",
+      "--sleep-idle-seconds", "300",
     ], { detached: true, stdio: "ignore" });
     await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     child.unref();
@@ -961,7 +967,7 @@ export class ProductService {
       todayUsage: (await readUsageReport(this.store.root, 1)).at(-1) ?? null,
       officialAccount: await officialAccount({ file: path.join(this.officialHome, "auth.json") }),
       switchModels: table.map(({ slug, route }) => ({ id: route.id, slug, name: route.name, model: route.model, vendor: route.vendor, protocol: route.protocol })),
-      unmanaged: await this.unmanagedWindows(),
+      unmanaged: await this.unmanagedWindows({ measure: false }),
       windows: await Promise.all(registry.windows.map(async (entry) => ({
         id: entry.id,
         name: entry.name,
@@ -1101,8 +1107,7 @@ export class ProductService {
     const paths = windowPaths(this.store.root, id);
     await fs.mkdir(paths.homePath, { recursive: true, mode: 0o700 });
     await fs.mkdir(paths.userDataPath, { recursive: true, mode: 0o700 });
-    // 启动前顺手清一遍：这一刻 Codex 还没打开任务库，删副本不会和运行中的进程抢锁。
-    // 只清这个窗口、只清「官方已归档 / 超 30 天」的副本，原件在官方库里，随时能再导入回来。
+    // 启动前清理遵守磁盘策略；此时 Codex 尚未打开任务库，可以安全删除旧副本。
     let diskCleanup = null;
     try {
       diskCleanup = await cleanupWindowOnLaunch({
