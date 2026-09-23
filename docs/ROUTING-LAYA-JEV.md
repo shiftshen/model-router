@@ -23,6 +23,8 @@ Laya 在这 216 条的 choice confidence 全部小于 0.5。因此 0.5 门槛会
 
 同日还完成了一次新规划器的真实端到端调用：显式指定本机 CoreML Python 与缓存模型、由钥匙串向官方 SDK 提供 Jev 密钥；规划器先尝试 Laya，再因低置信转 Jev，最终选中测试注册表的 `test-coder`，状态 `resolved`。记录为 `layaCalls=1`、`jevCalls=1`、`fallbackReason=laya_low_confidence`，耗时约 5.85 秒。这证明接口和接管路径可运行，不能证明该选择的模型完成了真实编码任务。
 
+作为模型能力的独立实测，本机还经 Model Router 网关对已配置的 `gpt-5.6-sol` 路由发起六项实际推理验证：17 个格式/内容检查通过 16 个，综合 94 分；规划题的 `task_type` 返回 `feature_design` 而非要求的 `planning`，其余五类检查全通过。该记录证明此路由在这六道短题上的响应质量与网关可用性，不证明上游底层模型身份，也不证明 Laya 的选模质量。未配置 API Key 的条目会被拒绝验证，不能以请求失败生成零分能力报告。
+
 ## 发布判断
 
 Laya 主尝试、Jev 兜底的代码路径需要继续保持受控实验状态。发布默认自动路由前，须用 Model Router 自己的任务和已验证模型做冻结样本对照，记录每次 Laya/Jev 实际调用、接管原因、最终模型、质量和耗时；还须验证 Windows 上的本地运行方式。现有 216 条属于其他业务情景，不能直接证明 Model Router 的任务路由质量。

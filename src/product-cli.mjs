@@ -11,6 +11,8 @@ import { resolveContextWindow } from "./model-windows.mjs";
 import { liveThreadRows } from "./thread-ledger.mjs";
 import { checkForUpdate, prepareUpdate } from "./update-service.mjs";
 import { readCallLog, readWatchState, summarizeCalls } from "./deepseek-watch.mjs";
+import { summarizeValidation, scoreValidation, validationPrompt, validationTasks } from "./model-validation.mjs";
+import { gatewayURL } from "./model-gateway.mjs";
 
 const store = new ModelStore();
 const service = new ProductService(store);
@@ -71,6 +73,48 @@ async function main() {
       if (validID(id)) await atomicJSON(path.join(store.root, "checks", `${id}.json`), { ok: false, testedAt: new Date().toISOString() });
       return { ok: false, message: error.message, ...(await store.publicData()) };
     }
+  }
+  if (command === "validate-models") {
+    const live = process.argv.includes("--live");
+    const requested = String(id || "").trim();
+    const data = await store.read();
+    const selectedRoutes = data.routes.filter((route) => !route.archived && route.protocol !== "oauth" && route.protocol !== "chatgpt" && route.model && (!requested || route.id === requested));
+    if (requested && !selectedRoutes.length) throw new Error("找不到可验证的已启用第三方模型");
+    const routeReadiness = await Promise.all(selectedRoutes.map(async (route) => ({ route, ready: route.noKey || Boolean(await store.secret(route.credentialID)) })));
+    if (live && requested && !routeReadiness[0].ready) throw new Error("请先配置 API Key；未发起验证请求，也未写入零分报告");
+    const routes = live ? routeReadiness.filter((entry) => entry.ready).map((entry) => entry.route) : selectedRoutes;
+    if (!live) {
+      return { mode: "dry-run", tasks: validationTasks.map(({ id: taskId, category }) => ({ id: taskId, category })), routes: routes.map(({ id: routeId, name, model, protocol }) => ({ id: routeId, name, model, protocol })), message: "这是验证计划；加 --live 才会向模型发送测试请求并消耗额度" };
+    }
+    await service.gatewayReady();
+    const reports = [];
+    for (const route of routes) {
+      // Local managed models need their service started before the gateway can
+      // validate them. Remote routes simply return { managed: false }.
+      await service.ensureManagedLocalService(route);
+      const results = [];
+      for (const task of validationTasks) {
+        const started = Date.now();
+        try {
+          const response = await fetch(`${gatewayURL}/routes/${route.id}/v1/responses`, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${await store.token(route.id)}` },
+            body: JSON.stringify({ model: route.model, input: validationPrompt(task), max_output_tokens: 700, stream: false }),
+            signal: AbortSignal.timeout(120000),
+          });
+          const body = await limitedJSON(response.body, 4 * 1024 * 1024);
+          const text = body?.output?.filter((item) => item?.type === "message").flatMap((item) => item.content || []).map((part) => part.text || "").join("") || "";
+          if (!response.ok) throw new Error(body?.error?.message || `HTTP ${response.status}`);
+          results.push({ ...scoreValidation(task, text), latencyMs: Date.now() - started });
+        } catch (error) {
+          results.push({ taskId: task.id, category: task.category, passed: 0, total: 1, score: 0, validJSON: false, reasons: [error.message], latencyMs: Date.now() - started });
+        }
+      }
+      const report = summarizeValidation(route, results, { mode: "live" });
+      reports.push(report);
+      await atomicJSON(path.join(store.root, "validation", `${route.id}.json`), { testedAt: new Date().toISOString(), ...report });
+    }
+    return { mode: "live", reports, skippedUnconfigured: routeReadiness.length - routes.length, message: `已完成 ${reports.length} 个模型的能力验证；跳过 ${routeReadiness.length - routes.length} 个未配置凭据的模型。结果仅写入本地 validation 目录，不包含 Key` };
   }
   if (command === "start-gateway") return service.startGateway();
   // 旧客户端仍会调用 launch；3.3.1 起把它重定向到统一可切换窗口。
