@@ -545,7 +545,7 @@ struct ModelLibraryView: View {
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.cancelAction)
                         .help("关闭模型库，回到窗口面板（按 Esc 也行）")
-                }.padding(.horizontal, 20).padding(.vertical, 14)
+                }.padding(.horizontal, 28).padding(.vertical, 18)
                 Divider()
                 if library.diskNeedsAttention, let disk = library.disk {
                     HStack(spacing: 10) {
@@ -834,7 +834,8 @@ struct ModelLibraryView: View {
     }
 
     private func modelDetail(_ model: ManagedModel) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
+        ScrollView {
+          VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(model.vendor).font(.callout).foregroundStyle(.secondary)
@@ -847,6 +848,8 @@ struct ModelLibraryView: View {
             }
             VStack(spacing: 0) {
                 row("模型 ID", model.protocol == "oauth" ? "由 ChatGPT Desktop 内选择" : (model.model.isEmpty ? "未选择 · 使用发现模型或编辑" : model.model))
+                Divider()
+                row("上下文", "\(model.contextWindow.formatted()) Token · \(model.contextWindowAuto == true ? "自动" : "已设定")")
                 Divider()
                 row("API 地址", model.protocol == "oauth" ? "ChatGPT 官方服务" : model.endpoint)
                 Divider()
@@ -861,7 +864,7 @@ struct ModelLibraryView: View {
                 row("Codex 环境", model.protocol == "oauth" ? "Full · 官方" : ((model.runtimeProfile ?? "auto") == "full" ? "Full · 完整工具" : ((model.runtimeProfile ?? "auto") == "lite" ? "Lite · 轻量" : "Auto · 本地轻量 / 云端完整")))
                 Divider()
                 row("失败时改用", model.protocol == "oauth" ? "不适用" : (model.fallback.flatMap { id in library.models.first { $0.id == id }?.name } ?? "未设置"))
-            }.padding(.horizontal, 16).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            }.padding(.horizontal, 20).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
             HStack(spacing: 10) {
                 if model.protocol != "oauth" {
                     Button("编辑配置 / Key") { editing = model }
@@ -881,7 +884,6 @@ struct ModelLibraryView: View {
             .foregroundStyle(library.success == false ? Color.red : Color.primary)
             .padding(14).frame(maxWidth: .infinity, alignment: .leading)
             .background(library.success == false ? Color.red.opacity(0.07) : Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-            Spacer(minLength: 0)
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "macwindow.on.rectangle").foregroundStyle(.secondary)
                 Text("API 工作窗口可在同一会话中切换自定义模型；官方模型请使用官方原版入口，账号与历史保持独立。").font(.caption).foregroundStyle(.secondary)
@@ -900,7 +902,8 @@ struct ModelLibraryView: View {
                         .help("再开一个独立的 Codex 窗口，用这个模型作为起始模型；想看两个模型同时干活时用")
                 }
             }.disabled(library.busy)
-        }.padding(28)
+          }.padding(.horizontal, 36).padding(.vertical, 30)
+        }
     }
 
     private func row(_ label: String, _ value: String) -> some View {
@@ -908,7 +911,7 @@ struct ModelLibraryView: View {
             Text(label).font(.callout).foregroundStyle(.secondary).frame(width: 76, alignment: .leading)
             Text(value).font(.system(size: 12, weight: .medium, design: .monospaced)).textSelection(.enabled).lineLimit(2).truncationMode(.middle)
             Spacer(minLength: 0)
-        }.padding(.vertical, 12)
+        }.padding(.vertical, 9)
     }
 
     private var discovery: some View {
