@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { autoRouterSlug, buildRouterTable } from "./router.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
+import { CHECK_MAX_AGE_MS, VALIDATION_MAX_AGE_MS } from "./task-qualification.mjs";
 
 export const automaticModelSlug = autoRouterSlug;
 const categories = ["planning", "frontend", "backend", "debugging", "tool_use", "long_context"];
@@ -68,17 +69,23 @@ export async function qualifiedAutomaticCandidates(store, requiredCategories) {
   const qualified = [];
   for (const { slug, route } of table) {
     if (slug === automaticModelSlug || route.archived || ["oauth", "chatgpt"].includes(route.protocol) || !route.model
-      || !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(route.model)) continue;
+      || !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(route.model)
+      || /^gpt-5\.6(?:[.-]|$)/i.test(route.model)) continue;
     const [check, validation, secret, credentialVersion] = await Promise.all([
       readEvidence(store.root, "checks", route.id),
       readEvidence(store.root, "validation", route.id),
       store.secret(route.credentialID),
       store.credentialVersion(route.credentialID),
     ]);
-    if (!check?.ok || check.endpoint !== route.endpoint || check.model !== route.model
+    if (!check?.ok || !Number.isFinite(Date.parse(check.testedAt)) || Date.now() - Date.parse(check.testedAt) > CHECK_MAX_AGE_MS
+      || check.endpoint !== route.endpoint || check.model !== route.model
       || check.protocol !== route.protocol || check.credentialVersion !== credentialVersion
       || (!route.noKey && !secret)) continue;
-    if (validation?.mode !== "live" || validation.routeId !== route.id || validation.model !== route.model) continue;
+    if (validation?.mode !== "live" || !Number.isFinite(Date.parse(validation.testedAt))
+      || Date.now() - Date.parse(validation.testedAt) > VALIDATION_MAX_AGE_MS
+      || validation.routeId !== route.id || validation.model !== route.model
+      || validation.endpoint !== route.endpoint || validation.protocol !== route.protocol
+      || validation.credentialVersion !== credentialVersion) continue;
     if (!categories.some((category) => Number(validation.byCategory?.[category]) >= 80)
       || !requiredCategories.every((category) => categories.includes(category) && Number(validation.byCategory?.[category]) >= 80)) continue;
     const capabilities = ["coding", ...categories.filter((category) => Number(validation.byCategory?.[category]) >= 80)];

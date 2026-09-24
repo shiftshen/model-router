@@ -88,3 +88,20 @@ test("Windows 在线更新入口必须保留检查按钮、启动检查与安装
   assert.match(main, /cma:install-update/);
   assert.match(main, /prepare-update/);
 });
+
+test("macOS 独立任务入口提交结构化画像并展示执行与验收证据", async () => {
+  const source = await fs.readFile(sourcePath, "utf8");
+  const models = await fs.readFile(new URL("../Sources/ModelLibrary.swift", import.meta.url), "utf8");
+  assert.match(source, /\.sheet\(isPresented: \$showTaskRunner\)/);
+  assert.match(source, /Label\("智能执行任务"/);
+  const runner = source.slice(source.indexOf("private struct TaskRunnerView"), source.indexOf("@main"));
+  for (const field of ["text", "complexity", "category", "acceptancePhrase"]) {
+    assert.match(runner, new RegExp(`"${field}":`));
+  }
+  assert.match(runner, /library\.call\(\["run-task"\]/);
+  for (const field of ["selectedRoute", "actualRoute", "gatewayRequestId", "responseModel", "acceptance", "output"]) {
+    assert.match(runner, new RegExp(`\\.${field}\\b`));
+    assert.match(models, new RegExp(`var ${field}:`));
+  }
+  assert.doesNotMatch(runner, /openWindow|openCodex|newWindow/, "任务入口不得改变正在进行的 Codex 对话或手选模型");
+});

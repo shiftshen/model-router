@@ -33,8 +33,8 @@ async function fixture(t, { qualify = true, recommendAutomatic } = {}) {
   if (qualify) {
     await fs.mkdir(path.join(root, "checks"));
     await fs.mkdir(path.join(root, "validation"));
-    await fs.writeFile(path.join(root, "checks", "real.json"), JSON.stringify({ ok: true, endpoint: route.endpoint, model: route.model, protocol: route.protocol, credentialVersion: await store.credentialVersion(route.credentialID) }));
-    await fs.writeFile(path.join(root, "validation", "real.json"), JSON.stringify({ mode: "live", routeId: route.id, model: route.model, byCategory: { planning: 100, backend: 100 } }));
+    await fs.writeFile(path.join(root, "checks", "real.json"), JSON.stringify({ ok: true, testedAt: new Date().toISOString(), endpoint: route.endpoint, model: route.model, protocol: route.protocol, credentialVersion: await store.credentialVersion(route.credentialID) }));
+    await fs.writeFile(path.join(root, "validation", "real.json"), JSON.stringify({ mode: "live", testedAt: new Date().toISOString(), routeId: route.id, model: route.model, endpoint: route.endpoint, protocol: route.protocol, credentialVersion: await store.credentialVersion(route.credentialID), byCategory: { planning: 100, backend: 100 } }));
   }
   const gateway = await listen(createGateway(store, { recommendAutomatic }), t);
   const send = async (model) => {

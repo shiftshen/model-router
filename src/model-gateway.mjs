@@ -395,9 +395,14 @@ async function settleRoute(root, requestId, status, { observedModel = "", protoc
       completedAt: new Date().toISOString(),
       status,
       confirmed: status === "completed",
-      observedModel: String(observedModel || "").trim(),
+      observedModel: /^task-[0-9a-f-]{36}-a[1-3]$/.test(list[index].sessionId)
+        ? (/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(String(observedModel || "")) ? String(observedModel) : "untrusted_model_identifier")
+        : String(observedModel || "").trim(),
       protocol: String(protocol || list[index].protocol || "").trim(),
-      error: status === "failed" ? redactDetail(error) : "",
+      // A provider can echo the task prompt in an error. Task-level audit
+      // keeps a stable code and never persists that untrusted response text.
+      error: status === "failed" ? (/^task-[0-9a-f-]{36}-a[1-3]$/.test(list[index].sessionId)
+        ? (failureCode(0, error) || "task_upstream_failed") : redactDetail(error)) : "",
     };
     list[index] = entry;
     await fsPromises.writeFile(file, JSON.stringify(list.slice(-100), null, 2), { mode: 0o600 });
@@ -773,7 +778,8 @@ export function createGateway(store = new ModelStore(), options = {}) {
       // 供应商只实现了一种接口时，按 404/405 自动换成能用的那种并记下来，用户不必先猜对接口格式。
       // Auto qualification applies to the selected route only. Its saved fallback
       // may not have passed the task's capability validation.
-      const candidates = [{ route, key }, ...(automaticDecision ? [] : (await failoverRoutes(store, route)).map((entry) => ({ route: entry, key: null })))];
+      const taskRequest = /^task-[0-9a-f-]{36}-a[1-3]$/.test(payload.session_id);
+      const candidates = [{ route, key }, ...(automaticDecision || taskRequest ? [] : (await failoverRoutes(store, route)).map((entry) => ({ route: entry, key: null })))];
       let served = false;
       let lastError = null;
       let eventsSent = false;

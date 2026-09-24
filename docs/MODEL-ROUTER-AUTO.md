@@ -1,5 +1,7 @@
 # 自动选模执行入口
 
+**当前建议入口：**Mac 应用「智能执行任务」或 `node src/product-cli.mjs run-task`，使用近期真实验证生成候选并逐次验收。详见 [智能执行任务](TASK-EXECUTION.md)。以下 `model-router-auto-run.mjs` 是早期显式适配器，候选文件由调用者提供，不包含新的任务级验收，不应以其 HTTP 成功代替任务成功。
+
 `scripts/model-router-auto-run.mjs` 是显式的 `auto` 执行入口。它先调用独立的 Model Router Engine，根据结构化任务画像和已验证的候选清单选出 Codex 模型目录中的 slug，再把完整 Responses 请求发送给现有的本机 Model Router 网关。任务原文只发送给最终选中的模型，不发送给 Laya/Jev 决策引擎。
 
 准备四份输入：工作窗口生成的 `model-catalog.json`、人工或宿主验证后的 `candidates.json`、本次任务的结构化 `profile.json`，以及符合 Responses API 的 `request.json`。请求中的 `model` 必须是 `"auto"`（或省略）；明确指定了其他模型时程序拒绝覆盖。候选格式和资格要求见 [建议接口](MODEL-ROUTER-ENGINE.md)。
