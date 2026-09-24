@@ -22,6 +22,8 @@ jobs:
           /usr/bin/sqlite3 --version
       - name: Node 回归测试
         run: npm test
+      - name: 安装模型路由引擎依赖
+        run: npm ci --prefix vendor/model-router-engine --omit=dev --ignore-scripts
       - name: 模型智能路由回归测试
         run: node --test model-intelligence/tests/planner.test.mjs model-intelligence/tests/laya-client.test.mjs model-intelligence/tests/decision-runtime.test.mjs
       - name: 获取 Universal Node 运行时
@@ -41,6 +43,8 @@ jobs:
           "$APP/Contents/Resources/node" -e 'if (process.arch !== (process.env.RUNNER_ARCH === "ARM64" ? "arm64" : "x64")) process.exit(1)'
           /usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' "$APP/Contents/Info.plist" | grep -qx '12.0'
           codesign --verify --deep --strict "$APP"
+          test -f "$APP/Contents/Resources/model-router-engine/bin/model-router-engine.mjs"
+          "$APP/Contents/Resources/node" "$APP/Contents/Resources/model-router-engine/bin/model-router-engine.mjs" doctor
       - name: 保存已验证 Universal App
         run: ditto -c -k --keepParent "build/Model Router.app" build/Model-Router-Universal-App.zip
       - uses: actions/upload-artifact@v4

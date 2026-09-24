@@ -391,6 +391,7 @@ final class LibraryViewModel: ObservableObject {
 
     func modelDetail(forModelKey key: String?) -> String? {
         guard let key, !key.isEmpty else { return nil }
+        if key == "model-router-auto" { return "每次请求自动选择 · 实际模型见最近请求" }
         if let hit = switchModels.first(where: { $0.slug == key || $0.id == key || $0.model == key }) {
             return "\(hit.name) · ID \(hit.model) · \(hit.vendor) · \(hit.protocol)"
         }

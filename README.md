@@ -12,12 +12,12 @@
 
 ## 当前发布版本
 
-3.3.3 为稳定功能维护版：官方账号使用原官方窗口；独立 API 窗口支持第三方模型切换。撤下未验收的统一登录实验，不支持在官方原生菜单内混用订阅与 API。详见 `docs/RELEASE-3.3.3.md`。
+3.4.0 增加独立 API 窗口的「自动选择模型」入口：按任务从已通过真实验证的模型中选择。官方账号继续使用原官方窗口。使用方法见 `docs/USER-GUIDE.md`。
 
 | | |
 |---|---|
-| 版本 | **3.3.3** |
-| 安装包 | `release/Model-Router-3.3.3-universal.dmg`（通用二进制：Apple Silicon + Intel） |
+| 版本 | **3.4.0（待发布）** |
+| 安装包 | 通过完整验收后提供通用二进制 DMG |
 | 系统要求 | macOS 12.0 起 |
 | SHA-256 | 见 `release/SHA256SUMS.txt` |
 | 签名 | Developer ID Application（Chinda Lorcharoen）；正式 Release 执行 Apple notarization + staple，并用 `spctl` / `stapler` 验证 |
@@ -26,6 +26,7 @@
 
 ```bash
 zsh scripts/fetch-runtime.sh     # 两个架构的 Node 运行时都要（通用二进制需要）
+npm ci --prefix vendor/model-router-engine --omit=dev --ignore-scripts
 zsh scripts/build-app.sh         # 通用二进制 + 两份 node
 zsh scripts/install-v2.sh        # 备份旧版、安装到 /Applications、装 LaunchAgent
 zsh scripts/package-release.sh   # 出 dmg、追加 SHA-256；有公证凭据时会自动公证并装订
@@ -58,9 +59,9 @@ Windows 版随 3.0 品牌统一，目标 Windows 10/11 x64，仍标记为 Previe
 
 ## 功能
 
-### Laya / Jev 路由实验
+### Laya / Jev 自动路由
 
-仓库提供独立的有限决策核心 `model-intelligence/src/routing-index.mjs`：复杂任务可先由本地 Laya Typed-Decisions 给出受约束画像，低置信或不可用时调用 Jev；两者均无法产生合法画像时不自动选择模型。现阶段它用于受控验证，桌面窗口仍以用户明确选择的模型为准。真实配对结果、运行条件和发布限制见 [`docs/ROUTING-LAYA-JEV.md`](docs/ROUTING-LAYA-JEV.md)。
+独立窗口可以选「自动选择模型」。应用内置 [Model Router Engine](https://github.com/shiftshen/model-router-engine) 0.2.0：本地 Laya Typed-Decisions 优先，低置信或不可用时由 Jev 兜底。自动路由只会选择已通过当前连接检查和对应任务真实能力验证的 API 模型；没有合格结果就明确报错。用户可以随时改回具体模型。详细操作见 [`使用手册`](docs/USER-GUIDE.md)。
 
 - 第三方模型库与官方 ChatGPT 登录：DeepSeek 等走各自的官方接口，官方入口用 ChatGPT OAuth，互不影响。
 - **3.1.0 官方 App 动态兼容**：官方只保留一个「ChatGPT Desktop（官方）」入口。macOS 优先发现 `/Applications/ChatGPT.app`，并按 bundle id `com.openai.codex` 动态发现、兼容旧 `/Applications/Codex.app`；官方频繁更新 App 路径/内部 Framework 时不再依赖旧固定路径。

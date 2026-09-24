@@ -2,6 +2,8 @@ import { resolveContextWindow } from "./model-windows.mjs";
 
 export const routerID = "router";
 export const routerProviderID = "cma_router";
+export const autoRouterSlug = "model-router-auto";
+export const autoModelName = "自动选择模型";
 
 export function slugifyModel(value) {
   return String(value ?? "")
@@ -21,6 +23,8 @@ export function switchableRoutes(routes) {
 
 export function buildRouterTable(routes) {
   const taken = new Map(routes.filter(route => route.routerSlug).map(route => [route.routerSlug, route]));
+  // The virtual Auto entry belongs to the catalog, never to a real route.
+  taken.set(autoRouterSlug, { id: "__model_router_auto__" });
   return switchableRoutes(routes).map((route) => {
     const base = route.routerSlug || slugifyModel(route.model) || slugifyModel(route.id) || "model";
     let slug = base;
@@ -86,12 +90,21 @@ export function modelInfo(route, slug) {
 export function routerCatalog(table) {
   const models = table.map(({ slug, route }) => modelInfo(route, slug));
   const seen = new Set(models.map(model => model.slug));
+  seen.add(autoRouterSlug);
   for (const { route } of table) {
     for (const alias of route.routerAliases || []) {
       if (seen.has(alias) || routerTableEntry(table, alias)?.route.id !== route.id) continue;
       seen.add(alias);
       models.push({ ...modelInfo(route, alias), visibility: "hide" });
     }
+  }
+  if (table.length) {
+    models.push({
+      ...modelInfo({ name: autoModelName, vendor: "Model Router", model: autoRouterSlug, contextWindow: 32000, reasoningLevels: ["medium"] }, autoRouterSlug),
+      description: "按任务自动选择已配置模型",
+      input_modalities: ["text"],
+      supports_parallel_tool_calls: false,
+    });
   }
   return { models };
 }

@@ -368,7 +368,7 @@ struct ModelLibraryView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("当前模型：\(library.displayName(forModelKey: window.currentModel) ?? "打开后在 Codex 顶部选择")")
                     .font(.system(size: 12, weight: .semibold)).lineLimit(1).truncationMode(.middle)
-                Text("实际：\(library.modelDetail(forModelKey: window.currentModel) ?? "打开后读取 Codex 当前选择")")
+                Text("\(window.currentModel == "model-router-auto" ? "模式" : "实际")：\(library.modelDetail(forModelKey: window.currentModel) ?? "打开后读取 Codex 当前选择")")
                     .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 Text("启动时：\(library.displayName(forModelKey: window.initialModel) ?? "自动")")
                     .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
@@ -433,6 +433,10 @@ struct ModelLibraryView: View {
             Picker("起始模型", selection: $library.newWindowModel) {
                 ForEach(library.switchModels) { entry in Text("\(entry.name) · \(entry.model)").tag(entry.id) }
             }.labelsHidden().disabled(library.switchModels.isEmpty)
+            if library.newWindowModel == "model-router-auto" {
+                Text("自动选择模型会按每次请求选用已配置的模型；实际使用情况可在最近请求中查看。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             Spacer(minLength: 0)
             Button { Task { await library.newWindow(initial: library.newWindowModel) } } label: {
                 Label("新建窗口", systemImage: "plus").frame(maxWidth: .infinity)

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { ModelStore } from "../src/model-store.mjs";
 import { ProductService, parseRunningWindows } from "../src/product-service.mjs";
+import { autoRouterSlug } from "../src/router.mjs";
 import {
   allocateWindow,
   legacyWindowID,
@@ -206,6 +207,39 @@ test("新建窗口启动失败时不留下打不开的空条目", async (context
   service.spawnWindow = async () => 80001;
   const created = await service.createWindow("deepseek-flash");
   assert.equal(created.window.id, "w2");
+});
+
+test("Auto 起始模型在新建、刷新、重开后保持，用户手选真实模型时不被覆盖", async (context) => {
+  const store = await fixture(context);
+  const service = quiet(new ProductService(store));
+  service.spawnWindow = async () => 81234;
+  service.runningWindows = async () => new Map();
+  const created = await service.createWindow(autoRouterSlug);
+  const home = created.window.homePath;
+  assert.equal(created.window.initialModel, autoRouterSlug);
+  assert.equal((await readWindowRegistry(store.root)).windows.find((entry) => entry.id === "w2").initialModel, autoRouterSlug);
+  assert.match(await fs.readFile(path.join(home, "config.toml"), "utf8"), /model = "model-router-auto"/);
+  assert.ok((await service.switchSummary()).switchModels.some((entry) => entry.id === autoRouterSlug));
+  assert.equal((await service.prepareWindow("w2")).runtimeProfile, "full");
+  await service.refreshCatalogs();
+  assert.match(await fs.readFile(path.join(home, "config.toml"), "utf8"), /model = "model-router-auto"/);
+
+  const configPath = path.join(home, "config.toml");
+  await fs.writeFile(configPath, (await fs.readFile(configPath, "utf8")).replace('model = "model-router-auto"', 'model = "deepseek-flash"'));
+  await service.refreshCatalogs();
+  assert.match(await fs.readFile(configPath, "utf8"), /model = "deepseek-flash"/, "manual config selection survives when Codex has no recent state");
+  await fs.writeFile(configPath, (await fs.readFile(configPath, "utf8")).replace('model = "deepseek-flash"', 'model = "model-router-auto"'));
+
+  const remember = async (model) => fs.writeFile(path.join(home, ".codex-global-state.json"), JSON.stringify({
+    "electron-persisted-atom-state": { "composer-recent-model-configurations-v1": [{ model }] },
+  }));
+  await remember(autoRouterSlug);
+  await service.refreshCatalogs();
+  assert.match(await fs.readFile(path.join(home, "config.toml"), "utf8"), /model = "model-router-auto"/);
+  await remember("deepseek-flash");
+  await service.refreshCatalogs();
+  assert.match(await fs.readFile(path.join(home, "config.toml"), "utf8"), /model = "deepseek-flash"/);
+  assert.equal((await service.prepareWindow("w2")).chosen.route.id, "deepseek-flash");
 });
 
 // 回归：并发建窗曾把编号算成同一个，后写的覆盖先写的，另一个 Codex 进程变成界面上看不见的孤儿。
