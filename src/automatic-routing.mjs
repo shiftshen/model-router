@@ -99,10 +99,11 @@ export async function qualifiedAutomaticCandidates(store, requiredCategories) {
 
 const runtimeEngineCLI = fileURLToPath(new URL("../model-router-engine/bin/model-router-engine.mjs", import.meta.url));
 const developmentEngineCLI = fileURLToPath(new URL("../vendor/model-router-engine/bin/model-router-engine.mjs", import.meta.url));
+const appNodeEngineCLI = path.join(path.dirname(process.execPath), "model-router-engine", "bin", "model-router-engine.mjs");
 
 async function engineCLI(enginePath) {
   if (enginePath) return enginePath;
-  for (const candidate of [runtimeEngineCLI, developmentEngineCLI]) {
+  for (const candidate of [runtimeEngineCLI, appNodeEngineCLI, developmentEngineCLI]) {
     try { await fs.access(candidate); return candidate; } catch { }
   }
   throw automaticError("auto_engine_unavailable", "自动选模引擎未安装");
