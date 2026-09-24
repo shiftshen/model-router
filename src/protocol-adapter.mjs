@@ -121,6 +121,11 @@ export function fromCompletion(result, definitions, protocol, model) {
     calls = result.choices[0].message.tool_calls || [];
     usage = { input_tokens: result.usage?.prompt_tokens || 0, output_tokens: result.usage?.completion_tokens || 0 };
   }
+  if (!String(text ?? "").trim() && !calls.length) {
+    const error = new Error("供应商返回 HTTP 200，但没有正文或工具调用");
+    error.code = "invalid_upstream_response";
+    throw error;
+  }
   const output = [];
   if (text) output.push({ id: `msg_${randomUUID()}`, type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] });
   for (const call of calls) {

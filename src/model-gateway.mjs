@@ -839,6 +839,25 @@ export function createGateway(store = new ModelStore(), options = {}) {
               disarmIdle();
             } else if (attempt === "responses") {
               const result = await upstream({ ...target, protocol: attempt }, targetKey, "responses", nativePayload({ ...targetPayload, model: target.model }, target.model), 3600000, callSignal, payload.session_id);
+              if (!payload.stream) {
+                const body = await limitedJSON(result.body, responseLimitBytes);
+                const useful = body.output?.some((item) => item.type === "function_call" || item.type === "custom_tool_call"
+                  || (item.type === "message" && item.content?.some((part) => String(part.text ?? "").trim())));
+                if (body.status === "failed" || !useful) {
+                  const failure = new Error(body.error?.message || "供应商返回 HTTP 200，但没有正文或工具调用");
+                  failure.detail = body.error?.message || "";
+                  if (body.status !== "failed") failure.code = "invalid_upstream_response";
+                  throw failure;
+                }
+                if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
+                observedModel = body.model || "";
+                await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
+                if (!response.headersSent) sendJSON(response, 200, body);
+                else response.end(JSON.stringify(body));
+                disarmIdle();
+                served = true;
+                break;
+              }
               if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
               // 这里必须直接转发，不能因为「已经发过响应头」就把整段缓冲下来：
               // 提前发出去的只是「正在压缩」的注释，正文仍然要一个 token 一个 token 地流。
@@ -924,7 +943,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
               await failRoute(store.root, routeAudit.requestId, { protocol: attempt, error: errorMessage(error) });
               throw error;
             }
-            const wrongEndpoint = [404, 405].includes(error.status);
+            const wrongEndpoint = [404, 405].includes(error.status) || error.code === "invalid_upstream_response";
             if (wrongEndpoint && index < attempts.length - 1) {
               clearInterval(heartbeat);
               heartbeat = undefined;

@@ -61,7 +61,7 @@ async function listen(server,t){await new Promise(r=>server.listen(0,"127.0.0.1"
 test("router accepts official and third-party turns and recovers from official quota failure",async t=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),"hybrid-router-"));t.after(()=>fs.rm(root,{recursive:true,force:true}));
  let thirdAuth="",thirdBody;
- const upstream=http.createServer(async(req,res)=>{thirdAuth=req.headers.authorization;let b="";for await(const c of req)b+=c;thirdBody=JSON.parse(b);res.setHeader("content-type","application/json");res.end(JSON.stringify({id:"third",object:"response",status:"completed",output:[]}));});
+ const upstream=http.createServer(async(req,res)=>{thirdAuth=req.headers.authorization;let b="";for await(const c of req)b+=c;thirdBody=JSON.parse(b);res.setHeader("content-type","application/json");res.end(JSON.stringify({id:"third",object:"response",status:"completed",output:[{type:"message",content:[{type:"output_text",text:"third-party answer"}]}]}));});
  const endpoint=await listen(upstream,t);
  const store=new ModelStore(root);const data=await store.read();
  const official=validateRoute({id:"chatgpt-test",name:"Official",protocol:"chatgpt",model:"official-model",switchable:true});

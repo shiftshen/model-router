@@ -296,7 +296,7 @@ test("切换窗口也能驱动原生 Responses 供应商并保留工具历史", 
     for await (const chunk of request) body += chunk;
     received = JSON.parse(body);
     response.setHeader("content-type", "application/json");
-    response.end(JSON.stringify({ id: "resp_1", object: "response", status: "completed", output: [] }));
+    response.end(JSON.stringify({ id: "resp_1", object: "response", status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "done" }] }] }));
   }), context);
   await store.read();
   await store.save({ id: "native-switch", name: "Native", endpoint: target, protocol: "responses", model: "native-model", noKey: true }, 1);
@@ -374,12 +374,35 @@ test("接口格式选错时网关按 404 自动换成可用的接口并记住", 
   assert.equal((await store.route("wrong")).protocol, "chat");
 });
 
+test("Responses 假成功没有正文时改试 Chat，而不把 HTTP 200 当作推理通过", async (context) => {
+  const store = await fixture(context);
+  const seen = [];
+  const target = await listen(http.createServer((request, response) => {
+    seen.push(request.url);
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/v1/responses") response.end(JSON.stringify({ status: "completed", output: [] }));
+    else response.end(JSON.stringify({ model: "chat-real", choices: [{ message: { content: "CHAT_OK" } }] }));
+  }), context);
+  await store.read();
+  await store.save({ id: "empty-response", name: "假 200", endpoint: `${target}/v1`, protocol: "responses", model: "chat-real", noKey: true }, 1);
+  const gateway = await listen(createGateway(store), context);
+  const result = await fetch(`${gateway}/routes/empty-response/v1/responses`, {
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${await store.token("empty-response")}` },
+    body: JSON.stringify({ model: "chat-real", input: "hello", stream: false }),
+  });
+  const data = await result.json();
+  assert.equal(result.status, 200);
+  assert.equal(data.output[0].content[0].text, "CHAT_OK");
+  assert.deepEqual(seen, ["/v1/responses", "/v1/chat/completions"]);
+  assert.equal((await store.route("empty-response")).protocol, "chat");
+});
+
 test("自动识别接口会挑出真正可用的那一套并保存", async (context) => {
   const store = await fixture(context);
   const target = await listen(http.createServer(async (request, response) => {
     if (request.url === "/v1/messages") {
       response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify({ id: "msg_1", type: "message", role: "assistant", content: [{ type: "text", text: "pong" }], usage: { input_tokens: 1, output_tokens: 1 } }));
+      response.end(JSON.stringify({ id: "msg_1", type: "message", role: "assistant", content: [{ type: "text", text: "MODEL_ASSISTANT_OK" }], usage: { input_tokens: 1, output_tokens: 1 } }));
       return;
     }
     response.writeHead(404, { "content-type": "application/json" });
@@ -399,7 +422,7 @@ test("自动识别接口会挑出真正可用的那一套并保存", async (cont
   const failed = new ProductService(store);
   const broken = await store.read();
   await store.save({ ...broken.routes.find((entry) => entry.id === "messages-only"), endpoint: "http://127.0.0.1:9/v1" }, broken.revision);
-  await assert.rejects(failed.detectProtocol("messages-only"), /三套接口都没跑通/);
+  await assert.rejects(failed.detectProtocol("messages-only"), /三套接口都没通过真实文本验证/);
 });
 
 test("所有条目窗口始终使用统一可切换目录且保留同一个任务库", async (context) => {

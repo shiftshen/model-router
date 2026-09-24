@@ -35,7 +35,7 @@ test("同一对话 A→B→A 切换且编辑模型后旧标识继续指向原供
   let text="";for await(const c of req)text+=c;
   const p=JSON.parse(text);seen.push({model:p.model,input:p.input});
   res.writeHead(200,{"content-type":"application/json"});
-  res.end(JSON.stringify({id:"resp_test",object:"response",status:"completed",output:[],usage:{input_tokens:1,output_tokens:1}}));
+  res.end(JSON.stringify({id:"resp_test",object:"response",status:"completed",output:[{type:"message",content:[{type:"output_text",text:"answer"}]}],usage:{input_tokens:1,output_tokens:1}}));
  });
  const listen=async s=>{await new Promise(r=>s.listen(0,"127.0.0.1",r));t.after(()=>new Promise(r=>{s.closeAllConnections();s.close(r)}));return "http://127.0.0.1:"+s.address().port};
  const url=await listen(upstream),store=new ModelStore(root);
