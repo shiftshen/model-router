@@ -13,6 +13,7 @@ struct ModelLibraryView: View {
     @State private var renameDraft = ""
 
     @State private var showModels = false
+    @State private var showTaskRunner = false
     @State private var didSizeWindow = false
     @State private var unmanagedDeleteTarget: UnmanagedWindow?
 
@@ -28,6 +29,7 @@ struct ModelLibraryView: View {
         }
         .frame(minWidth: 820, minHeight: 580)
         .sheet(isPresented: $showModels) { modelLibrary }
+        .sheet(isPresented: $showTaskRunner) { TaskRunnerView(library: library) }
         .sheet(item: $renameTarget) { window in renameSheet(window) }
         .confirmationDialog("确认删除这个单模型窗口？", isPresented: Binding(
             get: { unmanagedDeleteTarget != nil },
@@ -119,6 +121,8 @@ struct ModelLibraryView: View {
                 .help("刷新窗口状态")
             Button { showModels = true } label: { Label("模型库（\(library.models.count)）", systemImage: "slider.horizontal.3") }
                 .help("配置模型、检查连接、看诊断——都在这一个弹窗里")
+            Button { showTaskRunner = true } label: { Label("智能执行任务", systemImage: "sparkle.magnifyingglass") }
+                .help("从已验证的合格模型中选择，执行并验收本次任务")
             Menu {
                 Button("运行诊断") {
                     showModels = true
@@ -922,6 +926,159 @@ struct ModelLibraryView: View {
             }
             HStack { Spacer(); Button("关闭") { library.showDiscovery = false }.keyboardShortcut(.cancelAction) }
         }.padding(24).frame(width: 600, height: 530)
+    }
+}
+
+// 独立任务入口。它不会改动 Codex 窗口、当前对话或用户手选的模型。
+private struct TaskRunnerView: View {
+    @ObservedObject var library: LibraryViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var taskText = ""
+    @State private var complexity = "simple"
+    @State private var category = "backend"
+    @State private var acceptancePhrase = ""
+    @State private var running = false
+    @State private var result: ProductResponse?
+
+    private var canRun: Bool {
+        !running && !taskText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !acceptancePhrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("智能执行任务").font(.title2.bold())
+                Spacer()
+                Button("关闭") { dismiss() }.disabled(running)
+            }
+            Text("只使用近期验证合格的模型。任务内容会发送给最终执行路线；没有合格路线时停止。")
+                .font(.callout).foregroundStyle(.secondary)
+            Text("任务内容").font(.headline)
+            TextEditor(text: $taskText)
+                .font(.body)
+                .frame(height: 115)
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.secondary.opacity(0.3)))
+                .accessibilityLabel("任务内容")
+            HStack(spacing: 20) {
+                Picker("难度", selection: $complexity) {
+                    Text("简单").tag("simple")
+                    Text("复杂").tag("complex")
+                }.frame(width: 180)
+                Picker("能力类别", selection: $category) {
+                    Text("规划").tag("planning")
+                    Text("前端").tag("frontend")
+                    Text("后端").tag("backend")
+                    Text("调试").tag("debugging")
+                    Text("工具使用").tag("tool_use")
+                    Text("长上下文").tag("long_context")
+                }.frame(width: 230)
+                Spacer()
+            }
+            TextField("答案必须包含的短语", text: $acceptancePhrase)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("验收短语")
+            Text("填写可在答案中检查的关键短语；有文字回复本身不算通过。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                if running { ProgressView().controlSize(.small); Text("正在选模、执行和验收…").font(.callout) }
+                Spacer()
+                Button("执行并验收") { Task { await run() } }
+                    .buttonStyle(.borderedProminent).disabled(!canRun)
+            }
+            Divider()
+            if let result {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(systemName: result.acceptance?.passed == true ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .foregroundStyle(result.acceptance?.passed == true ? Color.green : Color.orange)
+                            Text(result.acceptance?.passed == true ? "任务通过" : result.status == "rejected" ? "拒绝自动执行" : "任务未通过")
+                                .font(.headline)
+                            Spacer()
+                            if let taskId = result.taskId { Text("任务 #\(taskId)").font(.caption.monospaced()).foregroundStyle(.secondary) }
+                        }
+                        detail("选中路线", routeLabel(result.selectedRoute, empty: "未选择"))
+                        detail("实际调用", routeLabel(result.actualRoute, empty: "未调用"))
+                        detail("决策来源", result.decisionSource ?? "未记录")
+                        detail("验收结果", result.acceptance?.reason ?? result.message ?? "未记录")
+                        if let attempts = result.attempts, !attempts.isEmpty {
+                            Text("执行记录 · \(attempts.count) 次尝试").font(.headline).padding(.top, 6)
+                            ForEach(Array(attempts.enumerated()), id: \.offset) { index, attempt in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("第 \(index + 1) 次 · \(attempt.routeId ?? "未记录路线") · \(attempt.status ?? "未记录状态")")
+                                        .font(.callout.weight(.semibold))
+                                    detail("实际路线", routeLabel(attempt.actualRoute, empty: "未确认"))
+                                    detail("请求 ID", nonempty(attempt.gatewayRequestId, fallback: "未记录"))
+                                    detail("响应标识", nonempty(attempt.responseModel, fallback: "未返回"))
+                                    detail("本次验收", attempt.acceptance?.passed == true ? "通过" : "未通过：\(attempt.acceptance?.reason ?? "未记录原因")")
+                                    if let elapsedMs = attempt.elapsedMs {
+                                        detail("耗时", "\(elapsedMs) ms")
+                                    }
+                                    if let switchReason = attempt.switchReason {
+                                        detail("切换原因", switchReason)
+                                    }
+                                }
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                            }
+                            Text("响应模型标识由上游返回，不能单独证明其内部使用的模型权重。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let output = result.output, !output.isEmpty {
+                            Text("答案").font(.headline).padding(.top, 6)
+                            Text(output).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(10)
+                                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                Text("提交后在这里查看选模、实际调用和任务验收结果。")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(24)
+        .frame(width: 720, height: 690)
+    }
+
+    private func detail(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(label).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
+            Text(value).textSelection(.enabled)
+            Spacer(minLength: 0)
+        }.font(.callout)
+    }
+
+    private func nonempty(_ value: String?, fallback: String) -> String {
+        guard let value, !value.isEmpty else { return fallback }
+        return value
+    }
+
+    private func routeLabel(_ id: String?, empty: String) -> String {
+        guard let id, !id.isEmpty else { return empty }
+        return library.displayName(forModelKey: id) ?? id
+    }
+
+    private func run() async {
+        guard canRun else { return }
+        running = true
+        result = nil
+        defer { running = false }
+        do {
+            let payload = try JSONSerialization.data(withJSONObject: [
+                "text": taskText.trimmingCharacters(in: .whitespacesAndNewlines),
+                "complexity": complexity,
+                "category": category,
+                "acceptancePhrase": acceptancePhrase.trimmingCharacters(in: .whitespacesAndNewlines),
+            ])
+            result = await library.call(["run-task"], input: payload, timeout: 600)
+        } catch {
+            result = ProductResponse(ok: false, message: "任务输入无法提交：\(error.localizedDescription)")
+        }
     }
 }
 

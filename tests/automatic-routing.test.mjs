@@ -15,8 +15,8 @@ async function fixture(t) {
   const route = await store.route("qualified");
   await fs.mkdir(path.join(root, "checks"));
   await fs.mkdir(path.join(root, "validation"));
-  await fs.writeFile(path.join(root, "checks", "qualified.json"), JSON.stringify({ ok: true, endpoint: route.endpoint, model: route.model, protocol: route.protocol, credentialVersion: await store.credentialVersion(route.credentialID) }));
-  await fs.writeFile(path.join(root, "validation", "qualified.json"), JSON.stringify({ mode: "live", routeId: route.id, model: route.model, byCategory: { planning: 100, backend: 100, debugging: 100, long_context: 100 } }));
+  await fs.writeFile(path.join(root, "checks", "qualified.json"), JSON.stringify({ ok: true, testedAt: new Date().toISOString(), endpoint: route.endpoint, model: route.model, protocol: route.protocol, credentialVersion: await store.credentialVersion(route.credentialID) }));
+  await fs.writeFile(path.join(root, "validation", "qualified.json"), JSON.stringify({ mode: "live", testedAt: new Date().toISOString(), routeId: route.id, model: route.model, endpoint: route.endpoint, protocol: route.protocol, credentialVersion: await store.credentialVersion(route.credentialID), byCategory: { planning: 100, backend: 100, debugging: 100, long_context: 100 } }));
   return { store, route, root };
 }
 

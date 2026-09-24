@@ -71,6 +71,14 @@ struct UpdateInfo: Decodable, Identifiable {
 struct ProductResponse: Decodable {
     var ok: Bool
     var message: String?
+    var taskId: String?
+    var status: String?
+    var selectedRoute: String?
+    var actualRoute: String?
+    var decisionSource: String?
+    var acceptance: TaskAcceptance?
+    var output: String?
+    var attempts: [TaskAttempt]?
     var revision: Int?
     var routes: [ManagedModel]?
     var templates: [ProviderTemplate]?
@@ -96,6 +104,24 @@ struct ProductResponse: Decodable {
     var officialCleanup: OfficialCleanupResult?
     var threads: [LiveThread]?
     var update: UpdateInfo?
+}
+
+struct TaskAcceptance: Decodable {
+    var passed: Bool
+    var reason: String?
+}
+
+struct TaskAttempt: Decodable {
+    var attempt: Int?
+    var routeId: String?
+    var slug: String?
+    var actualRoute: String?
+    var gatewayRequestId: String?
+    var responseModel: String?
+    var status: String?
+    var acceptance: TaskAcceptance?
+    var elapsedMs: Int?
+    var switchReason: String?
 }
 
 struct OfficialAccount: Decodable, Hashable {

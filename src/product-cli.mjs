@@ -13,6 +13,7 @@ import { checkForUpdate, prepareUpdate } from "./update-service.mjs";
 import { readCallLog, readWatchState, summarizeCalls } from "./deepseek-watch.mjs";
 import { summarizeValidation, scoreValidation, validationPrompt, validationTasks } from "./model-validation.mjs";
 import { gatewayURL } from "./model-gateway.mjs";
+import { runTask } from "./task-executor.mjs";
 
 const store = new ModelStore();
 const service = new ProductService(store);
@@ -33,6 +34,17 @@ export function humanBytes(bytes) {
 }
 
 async function main() {
+  if (command === "run-task") {
+    const task = await limitedJSON(process.stdin, 128 * 1024);
+    const result = await runTask(task, { store });
+    return {
+      ...result,
+      ok: result.acceptance?.passed === true,
+      message: result.acceptance?.passed === true
+        ? "任务已通过验收"
+        : result.status === "rejected" ? "没有符合本次任务要求的已验证路线" : "任务未通过验收",
+    };
+  }
   if (command === "library") {
     await store.read();
     await service.migrateSecrets();
@@ -92,6 +104,7 @@ async function main() {
       // Local managed models need their service started before the gateway can
       // validate them. Remote routes simply return { managed: false }.
       await service.ensureManagedLocalService(route);
+      const credentialVersion = await store.credentialVersion(route.credentialID);
       const results = [];
       for (const task of validationTasks) {
         const started = Date.now();
@@ -111,8 +124,19 @@ async function main() {
         }
       }
       const report = summarizeValidation(route, results, { mode: "live" });
+      const currentRoute = await store.route(route.id);
+      const currentCredentialVersion = await store.credentialVersion(route.credentialID);
+      if (currentRoute.model !== route.model || currentRoute.endpoint !== route.endpoint || currentRoute.protocol !== route.protocol || currentRoute.credentialID !== route.credentialID || currentCredentialVersion !== credentialVersion) {
+        throw new Error(`模型 ${route.id} 的配置或凭据在验证期间发生变化；本次结果不授予资格，请重新验证`);
+      }
+      await atomicJSON(path.join(store.root, "validation", `${route.id}.json`), {
+        testedAt: new Date().toISOString(),
+        ...report,
+        endpoint: route.endpoint,
+        protocol: route.protocol,
+        credentialVersion,
+      });
       reports.push(report);
-      await atomicJSON(path.join(store.root, "validation", `${route.id}.json`), { testedAt: new Date().toISOString(), ...report });
     }
     return { mode: "live", reports, skippedUnconfigured: routeReadiness.length - routes.length, message: `已完成 ${reports.length} 个模型的能力验证；跳过 ${routeReadiness.length - routes.length} 个未配置凭据的模型。结果仅写入本地 validation 目录，不包含 Key` };
   }
