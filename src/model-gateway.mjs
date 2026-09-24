@@ -161,6 +161,13 @@ export function failureCode(status, detail) {
   return "";
 }
 
+function requireToolCall(output, required) {
+  if (!required || output?.some((item) => item.type === "function_call" || item.type === "custom_tool_call")) return;
+  const error = new Error("供应商返回 HTTP 200，但未按要求调用工具；正在尝试备用模型");
+  error.code = "invalid_upstream_response";
+  throw error;
+}
+
 // 一个窗口实际能装下多少输入：要留出这次回答的输出空间，也要给摘要本身留位置。
 // 官方模型按 95% 算，第三方引擎很难吃满标称窗口，这里按 90% 算——宁可早一点压缩，
 // 也不要把请求发出去、等供应商报 400。
@@ -849,6 +856,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
                   if (body.status !== "failed") failure.code = "invalid_upstream_response";
                   throw failure;
                 }
+                requireToolCall(body.output, payload.tool_choice === "required");
                 if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
                 observedModel = body.model || "";
                 await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
@@ -882,23 +890,39 @@ export function createGateway(store = new ModelStore(), options = {}) {
               const { body, definitions } = toChat({ ...targetPayload, model: target.model }, { stream: Boolean(payload.stream) });
               const path = attempt === "anthropic" ? "messages" : "chat/completions";
               const result = await upstream({ ...target, protocol: attempt }, targetKey, path, attempt === "anthropic" ? toAnthropic(body, { stream: Boolean(payload.stream) }) : body, 3600000, callSignal, payload.session_id);
-              if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
               armIdle();
               if (!payload.stream) {
                 const completion = await limitedJSON(result.body);
                 observedModel = completion?.model || "";
+                const converted = fromCompletion(completion, definitions, attempt, target.model);
+                requireToolCall(converted.output, payload.tool_choice === "required");
+                if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
                 await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
-                sendJSON(response, 200, fromCompletion(completion, definitions, attempt, target.model));
+                sendJSON(response, 200, converted);
               }
               else if (!(result.headers.get("content-type") || "").includes("text/event-stream")) {
                 const completion = await limitedJSON(result.body);
                 observedModel = completion?.model || "";
+                const converted = fromCompletion(completion, definitions, attempt, target.model);
+                requireToolCall(converted.output, payload.tool_choice === "required");
+                if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
                 await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
-                response.end(responseEvents(fromCompletion(completion, definitions, attempt, target.model)));
+                response.end(responseEvents(converted));
               } else {
-                const stream = createResponseStream({ model: target.model, send: (chunk) => response.write(chunk) });
+                // A required tool call may be silently turned into plain text by a free router.
+                // Keep the SSE body private until a real call is confirmed, so a backup route
+                // can still take over without stitching two models into one Codex response.
+                const holdForTool = payload.tool_choice === "required";
+                const pending = [];
+                let pendingBytes = 0;
+                const stream = createResponseStream({ model: target.model, send: (chunk) => {
+                  if (!holdForTool) { response.write(chunk); return; }
+                  pendingBytes += Buffer.byteLength(chunk);
+                  if (pendingBytes > 8 * 1024 * 1024) throw new Error("工具调用验证的流式响应过大");
+                  pending.push(chunk);
+                } });
                 stream.created();
-                eventsSent = true;
+                if (!holdForTool) eventsSent = true;
                 const parse = (attempt === "anthropic" ? anthropicStreamParser : chatStreamParser)((event) => {
                   if (event.type === "text") stream.textDelta(event.text);
                   else if (event.type === "reasoning") stream.reasoningDelta(event.text);
@@ -916,7 +940,10 @@ export function createGateway(store = new ModelStore(), options = {}) {
                 }
                 observedModel = capture.model();
                 disarmIdle();
-                stream.finish({ definitions });
+                const converted = stream.finish({ definitions });
+                requireToolCall(converted.output, holdForTool);
+                if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
+                if (holdForTool) { for (const chunk of pending) response.write(chunk); eventsSent = true; }
                 await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
                 response.end();
               }

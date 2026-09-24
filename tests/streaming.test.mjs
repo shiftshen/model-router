@@ -168,6 +168,37 @@ test("主模型额度用尽时自动改用备用模型，且正常时不打扰�
   assert.match(again.text, /quota exhausted/);
 });
 
+test("要求工具时主模型假 200 只写文字，流式请求会改用真正调用工具的备用模型", async (context) => {
+  const store = await fixture(context);
+  let backupHits = 0;
+  const primary = await listen(http.createServer(async (request, response) => {
+    await readBody(request);
+    if (request.url !== "/v1/chat/completions") { response.writeHead(404); response.end("{}"); return; }
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(sseData({ choices: [{ delta: { content: "我会调用工具（其实没有）" } }] }) + "data: [DONE]\n\n");
+  }), context);
+  const backup = await listen(http.createServer(async (request, response) => {
+    backupHits += 1;
+    await readBody(request);
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(sseData({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_good", function: { name: "echo", arguments: '{"input":"hello"}' } }] } }] }) + "data: [DONE]\n\n");
+  }), context);
+  await store.read();
+  await store.save({ id: "pretend", name: "Pretend", endpoint: `${primary}/v1`, protocol: "chat", model: "m1", noKey: true, runtimeProfile: "full", fallback: "real-tool" }, 1);
+  await store.save({ id: "real-tool", name: "Real tool", endpoint: `${backup}/v1`, protocol: "chat", model: "m2", noKey: true, runtimeProfile: "full" }, 2);
+  const gateway = await listen(createGateway(store), context);
+  const result = await callGateway(gateway, "pretend", {
+    model: "m1", stream: true, input: "Call echo with hello", tool_choice: "required",
+    tools: [{ type: "custom", name: "echo", description: "Echo", format: { type: "text" } }],
+  }, await store.token("pretend"));
+  assert.equal(result.status, 200);
+  assert.equal(backupHits, 1);
+  assert.match(result.text, /"type":"custom_tool_call"/);
+  assert.match(result.text, /"input":"hello"/);
+  assert.doesNotMatch(result.text, /我会调用工具/);
+  assert.equal(result.events.filter((event) => event === "response.completed").length, 1);
+});
+
 test("已经开始输出正文后不再切换供应商，改为如实报错", async (context) => {
   const store = await fixture(context);
   let backupHits = 0;
