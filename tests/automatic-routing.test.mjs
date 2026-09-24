@@ -88,6 +88,19 @@ test("hard tasks need overall quality, quota failures stay excluded, long contex
   assert.equal((await qualifiedAutomaticCandidates(store, ["backend"], { difficulty: "hard" })).length, 0);
 });
 
+test("a temporary free-tier rate limit recovers after cooldown, but explicit quota exhaustion stays excluded", async (t) => {
+  const { store, root, route } = await fixture(t);
+  const file = path.join(root, "route-log.json");
+  const rateLimit = "额度不足或请求过于频繁（供应商说明：You've reached the API rate limit for free users.）";
+  await fs.writeFile(file, JSON.stringify([{ route: route.id, at: new Date().toISOString(), status: "failed", error: rateLimit }]));
+  assert.equal((await qualifiedAutomaticCandidates(store, ["backend"])).length, 0);
+  const cooled = new Date(Date.now() - 180_000).toISOString();
+  await fs.writeFile(file, JSON.stringify([{ route: route.id, at: cooled, status: "failed", error: rateLimit }]));
+  assert.equal((await qualifiedAutomaticCandidates(store, ["backend"])).length, 1);
+  await fs.writeFile(file, JSON.stringify([{ route: route.id, at: cooled, status: "failed", error: "额度不足或请求过于频繁（供应商说明：insufficient_quota）" }]));
+  assert.equal((await qualifiedAutomaticCandidates(store, ["backend"])).length, 0);
+});
+
 test("resolved route must match candidate slug, upstream model and provider; multiple roles fail", async (t) => {
   const { store, route } = await fixture(t);
   const payload = { model: automaticModelSlug, input: "Please inspect API endpoint" };

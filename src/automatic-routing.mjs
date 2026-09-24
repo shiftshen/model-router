@@ -74,6 +74,14 @@ async function readEvidence(root, directory, id) {
   catch { return null; }
 }
 
+function persistentQuotaFailure(error) {
+  // The gateway's generic 429 heading says "额度不足或请求过于频繁" for both
+  // exhausted balances and temporary rate limits. Only the supplier detail
+  // can justify excluding a route until a later successful call.
+  const detail = String(error ?? "").replaceAll("额度不足或请求过于频繁", "");
+  return /insufficient_quota|quota.{0,25}(?:exhausted|depleted|insufficient)|(?:credits?|balance).{0,25}(?:exhausted|depleted|insufficient)|(?:余额|额度).{0,8}(?:不足|耗尽|用尽)/i.test(detail);
+}
+
 export async function qualifiedAutomaticCandidates(store, requiredCategories, profile = {}) {
   const routes = (await store.read()).routes;
   const table = buildRouterTable(routes);
@@ -108,7 +116,7 @@ export async function qualifiedAutomaticCandidates(store, requiredCategories, pr
     if (requiredCategories.includes("long_context") || (Number(profile.contextRequirement) || 0) > 32000) continue;
     if (route.model === "qwen3-vl:latest" && (profile.difficulty !== "simple" || requiredCategories.includes("tool_use"))) continue;
     const failures = routeLog.filter((item) => item.route === route.id && item.status === "failed"
-      && /insufficient_quota|quota.{0,25}(?:exhausted|depleted|insufficient)|额度.{0,8}(?:不足|耗尽|用尽)/i.test(String(item.error ?? "")));
+      && persistentQuotaFailure(item.error));
     const lastFailure = failures.at(-1);
     if (lastFailure && !routeLog.some((item) => item.route === route.id && item.status === "completed"
       && Date.parse(item.completedAt ?? item.at) > Date.parse(lastFailure.completedAt ?? lastFailure.at))) continue;
