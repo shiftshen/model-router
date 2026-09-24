@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { ModelStore } from "../src/model-store.mjs";
 import { ProductService } from "../src/product-service.mjs";
+import { autoRouterSlug } from "../src/router.mjs";
 import { writeWindowRegistry } from "../src/window-registry.mjs";
 
 test("profiles follow remembered models across windows and continuations; running windows defer changes", async (t) => {
@@ -58,5 +59,9 @@ test("profiles follow remembered models across windows and continuations; runnin
   await fs.writeFile(path.join(continuation,"conversation-import.json"), "{}");
   await remember(continuation,"local");
   assert.equal((await service.prepare("local")).runtimeProfile, "lite");
+  await remember(continuation, autoRouterSlug);
+  assert.equal((await service.prepare("local")).runtimeProfile, "full");
+  assert.match(await fs.readFile(path.join(continuation, "config.toml"), "utf8"), /model = "model-router-auto"/);
+  await service.refreshRouteHomes("local");
+  assert.match(await fs.readFile(path.join(continuation, "config.toml"), "utf8"), /model = "model-router-auto"/);
 });
-

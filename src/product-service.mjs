@@ -10,7 +10,7 @@ import { errorMessage, gatewayBuild, gatewayURL, upstream, limitedJSON } from ".
 import { cleanupPlan, cleanupWindowOnLaunch, directorySize, diskUsage } from "./disk-cleanup.mjs";
 import { readDiskPolicy } from "./disk-policy.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
-import { stableRouterTable as buildRouterTable, modelInfo, routerCatalog, routerID, routerProviderID, routerTableEntry } from "./router.mjs";
+import { autoModelName, autoRouterSlug, stableRouterTable as buildRouterTable, modelInfo, routerCatalog, routerID, routerProviderID, routerTableEntry } from "./router.mjs";
 import { resolveRuntimeProfile } from "./runtime-profile.mjs";
 import { officialAccount, officialModels, officialTokens } from "./chatgpt-auth.mjs";
 export { resolveRuntimeProfile } from "./runtime-profile.mjs";
@@ -191,6 +191,20 @@ export async function readWindowCurrentModel(homePath) {
     return typeof model === "string" ? model.trim() : "";
   } catch {
     return "";
+  }
+}
+
+// Codex 的最近选择状态可能尚未写盘；此时保留窗口 config.toml 中已经选定的模型。
+async function readWindowPreferredModel(homePath) {
+  const recent = await readWindowCurrentModel(homePath);
+  if (recent) return recent;
+  try {
+    const config = await fs.readFile(path.join(homePath, "config.toml"), "utf8");
+    const match = config.match(/^\s*model\s*=\s*"([^"\n]+)"/m);
+    return match?.[1] ?? "";
+  } catch (error) {
+    if (error.code === "ENOENT") return "";
+    throw error;
   }
 }
 
@@ -772,9 +786,9 @@ export class ProductService {
     if (switching) {
       const table = buildRouterTable((await this.store.read()).routes);
       await atomicJSON(catalogPath, routerCatalog(table));
-      const remembered = await readWindowCurrentModel(homePath);
-      const chosen = routerTableEntry(table, remembered) || this.routerSelection(table, id, id);
-      runtimeProfile = resolveRuntimeProfile(chosen.route);
+      const remembered = await readWindowPreferredModel(homePath);
+      const chosen = this.routerSelection(table, remembered, id);
+      runtimeProfile = this.routerRuntimeProfile(chosen);
       config = renderRouterConfig(source, { model: chosen.slug, catalogPath, runtimeProfile });
     } else {
       await atomicJSON(catalogPath, catalog(route));
@@ -819,9 +833,9 @@ export class ProductService {
       if ((await this.runningWindows()).has(id)) continue;
       const catalogPath = path.join(homePath, "model-catalog.json");
       const current = await this.store.route(id);
-      const remembered = await readWindowCurrentModel(homePath);
-      const chosen = routerTableEntry(table, remembered) || this.routerSelection(table, id, id);
-      const runtimeProfile = resolveRuntimeProfile(chosen?.route || current);
+      const remembered = await readWindowPreferredModel(homePath);
+      const chosen = this.routerSelection(table, remembered, id);
+      const runtimeProfile = this.routerRuntimeProfile(chosen);
       const updated = renderRouterConfig(source, { model: chosen.slug, catalogPath, runtimeProfile });
       await atomicJSON(catalogPath, routerCatalog(table));
       const temporary = path.join(homePath, `.config-${randomUUID()}.toml`);
@@ -966,7 +980,10 @@ export class ProductService {
       recentRoutes: await readRecentRoutes(this.store.root),
       todayUsage: (await readUsageReport(this.store.root, 1)).at(-1) ?? null,
       officialAccount: await officialAccount({ file: path.join(this.officialHome, "auth.json") }),
-      switchModels: table.map(({ slug, route }) => ({ id: route.id, slug, name: route.name, model: route.model, vendor: route.vendor, protocol: route.protocol })),
+      switchModels: [
+        ...(table.length ? [{ id: autoRouterSlug, slug: autoRouterSlug, name: autoModelName, model: "按任务选择", vendor: "Model Router", protocol: "auto" }] : []),
+        ...table.map(({ slug, route }) => ({ id: route.id, slug, name: route.name, model: route.model, vendor: route.vendor, protocol: route.protocol })),
+      ],
       unmanaged: await this.unmanagedWindows({ measure: false }),
       windows: await Promise.all(registry.windows.map(async (entry) => ({
         id: entry.id,
@@ -985,11 +1002,20 @@ export class ProductService {
       routerRunningInstances: [...running.keys()].sort(),
     };
   }
-  // 窗口里能选的模型 = 全部可切换模型；起始模型优先用显式指定，其次用窗口记住的那个。
+  // Auto 是目录中的虚拟条目，真实路由表中没有。route 只供非 Auto 选择和环境推断使用。
   routerSelection(table, initial, remembered) {
-    const wanted = String(initial || remembered || "").trim();
-    if (!wanted) return table[0];
-    return table.find((entry) => entry.route.id === wanted || entry.slug === wanted || entry.route.model === wanted) || table[0];
+    for (const value of [initial, remembered]) {
+      const wanted = String(value ?? "").trim();
+      if (!wanted) continue;
+      if (wanted === autoRouterSlug) return { slug: autoRouterSlug, route: table[0].route };
+      const found = routerTableEntry(table, wanted);
+      if (found) return found;
+    }
+    return table[0];
+  }
+  routerRuntimeProfile(chosen) {
+    // Auto 请求可能选中本地或云端模型；保持完整工具环境，避免固定为 Lite 后限制后续请求。
+    return chosen.slug === autoRouterSlug ? "full" : resolveRuntimeProfile(chosen.route);
   }
   async windowRegistry() {
     return readWindowRegistry(this.store.root);
@@ -1030,9 +1056,9 @@ export class ProductService {
       catch (error) { if (error.code === "ENOENT") continue; throw error; }
       if (running.has(id)) { skipped.push(home); continue; }
       const catalogPath = path.join(home, "model-catalog.json");
-      const remembered = await readWindowCurrentModel(home);
-      const chosen = route.switchable ? (routerTableEntry(table, remembered) || this.routerSelection(table, id, id)) : null;
-      const runtimeProfile = resolveRuntimeProfile(chosen?.route || route);
+      const remembered = await readWindowPreferredModel(home);
+      const chosen = route.switchable ? this.routerSelection(table, remembered, id) : null;
+      const runtimeProfile = chosen ? this.routerRuntimeProfile(chosen) : resolveRuntimeProfile(route);
       await atomicJSON(catalogPath, route.switchable ? routerCatalog(table) : catalog(route));
       const config = route.switchable
         ? renderRouterConfig(source, { model: chosen.slug, catalogPath, runtimeProfile })
@@ -1069,9 +1095,9 @@ export class ProductService {
         skipped.push({ id: target.id, reason: "窗口正在运行，环境变更将在重开后生效" });
         continue;
       }
-      const currentModel = await readWindowCurrentModel(target.home);
-      const chosen = routerTableEntry(table, currentModel) || this.routerSelection(table, target.initialModel, target.initialModel);
-      const runtimeProfile = resolveRuntimeProfile(chosen.route);
+      const currentModel = await readWindowPreferredModel(target.home);
+      const chosen = this.routerSelection(table, currentModel, target.initialModel);
+      const runtimeProfile = this.routerRuntimeProfile(chosen);
       let source = "";
       try { source = await fs.readFile(path.join(this.officialHome, "config.toml"), "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
       const temporary = path.join(target.home, `.config-${randomUUID()}.toml`);
@@ -1098,11 +1124,11 @@ export class ProductService {
     const registry = await readWindowRegistry(this.store.root);
     const entry = findWindow(registry, id);
     if (!entry && id !== legacyWindowID) throw new Error("窗口不存在，请先新建窗口");
-    const remembered = await readWindowCurrentModel(windowPaths(this.store.root, id).homePath);
+    const remembered = await readWindowPreferredModel(windowPaths(this.store.root, id).homePath);
     const chosen = initial
       ? this.routerSelection(table, initial, entry?.initialModel)
-      : routerTableEntry(table, remembered) || this.routerSelection(table, "", entry?.initialModel);
-    const runtimeProfile = resolveRuntimeProfile(chosen.route);
+      : this.routerSelection(table, remembered, entry?.initialModel);
+    const runtimeProfile = this.routerRuntimeProfile(chosen);
     await this.startGateway();
     const paths = windowPaths(this.store.root, id);
     await fs.mkdir(paths.homePath, { recursive: true, mode: 0o700 });
@@ -1193,7 +1219,7 @@ export class ProductService {
     const prepared = await this.prepareWindow(id, initial, { importHistory });
     const pid = await this.spawnWindow(prepared);
     // 记住起始模型：只改这一个窗口，不动期间新建的其它窗口。
-    await updateWindow(this.store.root, id, { initialModel: prepared.chosen.route.id });
+    await updateWindow(this.store.root, id, { initialModel: prepared.chosen.slug === autoRouterSlug ? autoRouterSlug : prepared.chosen.route.id });
     const summary = await this.switchSummary();
     const importedMessage = prepared.imported?.pendingFirstLaunch
       ? " 首次打开会先建立统一任务库；关闭后再次打开，会自动把官方与 API 会话补进来。"
@@ -1209,7 +1235,7 @@ export class ProductService {
       delivered: true,
       pid,
       diskCleanup: prepared.diskCleanup,
-      message: `已打开「${entry.name}」（PID ${pid}）：在 Codex 顶部的模型选择里直接换模型，同一个窗口里的对话继续有效。当前起始模型 ${prepared.chosen.route.name}，可选 ${prepared.table.length} 个模型。${importedMessage}${cleanupMessage}`,
+      message: `已打开「${entry.name}」（PID ${pid}）：在 Codex 顶部的模型选择里直接换模型，同一个窗口里的对话继续有效。当前起始模型 ${prepared.chosen.slug === autoRouterSlug ? autoModelName : prepared.chosen.route.name}，可选 ${prepared.table.length + 1} 个模型。${importedMessage}${cleanupMessage}`,
     };
   }
   async renameWindow(id, name) {

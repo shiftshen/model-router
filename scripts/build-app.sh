@@ -48,6 +48,11 @@ echo "主程序架构：$(lipo -archs "$APP/Contents/MacOS/CodexModelAssistant")
 
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
 rsync -a --delete "$ROOT"/src/ "$APP/Contents/Resources/runtime/"
+[[ -f "$ROOT/vendor/model-router-engine/node_modules/@typesafe-ai/sdk/package.json" ]] || {
+  echo "缺少模型路由引擎依赖（先运行 npm ci --prefix vendor/model-router-engine --omit=dev）" >&2
+  exit 1
+}
+rsync -a --delete "$ROOT"/vendor/model-router-engine/ "$APP/Contents/Resources/model-router-engine/"
 
 # 单个 Universal Node：包内不再留 Intel-only helper，避免 Apple Silicon 的兼容性提示。
 NODE_SLICES=()

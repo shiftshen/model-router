@@ -7,7 +7,7 @@ import http from "node:http";
 import { execFileSync } from "node:child_process";
 import { ModelStore, validateRoute } from "../src/model-store.mjs";
 import { ProductService, parseOfficialRunning, renderRouterConfig, runningInstancesFromPS } from "../src/product-service.mjs";
-import { buildRouterTable, modelInfo, routerCatalog, routerTableEntry } from "../src/router.mjs";
+import { autoRouterSlug, buildRouterTable, modelInfo, routerCatalog, routerTableEntry } from "../src/router.mjs";
 import { createGateway } from "../src/model-gateway.mjs";
 import { sqliteSync } from "./test-platform.mjs";
 
@@ -47,12 +47,24 @@ test("可切换窗口收录第三方模型并按模型名生成唯一标识", ()
   assert.equal(routerTableEntry(table, "local").route.id, "local");
   assert.equal(routerTableEntry(table, "missing"), null);
   const catalog = routerCatalog(table);
-  assert.equal(catalog.models.length, 4);
+  assert.equal(catalog.models.length, 5);
   assert.equal(catalog.models[0].display_name, "模型 a-first");
   assert.deepEqual(catalog.models[0].input_modalities, ["text", "image"]);
   // 本地优先 / 专家策略已移除，目录里不再注入任何内置指令
   assert.equal(catalog.models[2].base_instructions, "");
   assert.equal(catalog.models[0].base_instructions, "");
+  const auto = catalog.models.find((entry) => entry.slug === autoRouterSlug);
+  assert.equal(auto.display_name, "自动选择模型");
+  assert.equal(auto.visibility, "list");
+  assert.equal(auto.context_window, 32000);
+  assert.deepEqual(auto.input_modalities, ["text"]);
+  assert.ok(!table.some((entry) => entry.slug === autoRouterSlug), "Auto must not be a real route");
+});
+
+test("Auto slug is reserved even when a user model asks for that slug", () => {
+  const table = buildRouterTable([route("custom", autoRouterSlug, { routerSlug: autoRouterSlug })]);
+  assert.equal(table[0].slug, `${autoRouterSlug}-2`);
+  assert.equal(routerCatalog(table).models.filter((entry) => entry.slug === autoRouterSlug).length, 1);
 });
 
 test("切换窗口配置指向网关 router 路由，且不写入任何供应商密钥", () => {

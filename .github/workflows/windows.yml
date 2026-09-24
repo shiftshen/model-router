@@ -39,6 +39,8 @@ jobs:
           .\.runtime-cache\windows\sqlite3.exe --version
       - name: Install dependencies
         run: npm ci
+      - name: Install model router engine dependencies
+        run: npm ci --prefix vendor/model-router-engine --omit=dev --ignore-scripts
       - name: Node tests on Windows
         shell: powershell
         run: |

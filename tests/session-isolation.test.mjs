@@ -26,6 +26,7 @@ test("打开窗口只维护自己的项目分组，不从官方或其他窗口�
 test("旧会话别名拥有完整模型元数据且不重复占用模型菜单",()=>{
  const table=buildRouterTable([{id:"a",name:"Coding Plan",protocol:"responses",model:"ark-code-latest",routerSlug:"ark-code-latest",routerAliases:["deepseek-v4-flash"]}]);
  const models=routerCatalog(table).models;
- assert.equal(models.length,2);assert.equal(models[1].slug,"deepseek-v4-flash");
+ assert.equal(models.length,3);assert.equal(models[1].slug,"deepseek-v4-flash");
  assert.equal(models[1].display_name,"Coding Plan");assert.equal(models[1].visibility,"hide");
+ assert.equal(models[2].slug,"model-router-auto");
 });

@@ -30,6 +30,7 @@ import {
 } from "./context-compaction.mjs";
 import { contextWindowFromMessage, resolveContextWindow } from "./model-windows.mjs";
 import { payloadForRoute, payloadSize } from "./runtime-profile.mjs";
+import { automaticModelSlug, resolveAutomaticRoute } from "./automatic-routing.mjs";
 export { estimateTokens };
 
 export const gatewayPort = 18793;
@@ -177,7 +178,7 @@ export function isContextOverflow(error) {
 // 压缩：把较早的记录换成摘要，保留最近一段完整对话。
 // 保留量取窗口的 45%——留出输出空间，也让摘要本身有地方放。
 // 返回值里的 note 会拼进用户可见的说明，让用户知道发生了什么，而不是悄悄改了他的历史。
-export async function compactForWindow({ store, route, payload, limit, signal, keepRatio = 0.45, force = false, sessionId = "", authFile = "", windowID = "" }) {
+export async function compactForWindow({ store, route, payload, limit, signal, keepRatio = 0.45, force = false, sessionId = "", authFile = "", windowID = "", restrictSummarizer = false }) {
   const items = payload?.input;
   if (!Array.isArray(items) || items.length < 6) return null;
   const keepBudgetBytes = Math.max(64 * 1024, Math.floor(limit * keepRatio) * 3.2);
@@ -189,7 +190,7 @@ export async function compactForWindow({ store, route, payload, limit, signal, k
   // 摘要请求本身也要装得下：给 128K 的模型做摘要时，把 150 万 token 的记录整段丢过去
   // 只会让摘要这一步也失败。所以先估一下摘要请求的量，装不下就换本机窗口最大的那个模型来做。
   const transcript = transcriptOf(head);
-  const summarizer = await pickSummarizer(store, route, Math.round(transcript.length / 3.2));
+  const summarizer = restrictSummarizer ? route : await pickSummarizer(store, route, Math.round(transcript.length / 3.2));
   let summary = "";
   let summaryAudit = null;
   try {
@@ -341,7 +342,7 @@ async function updateAuditUsage(root, entry, phase) {
 }
 
 // started 表示请求确实发出（可能已经计费）；只有 completed 才能证明模型切换成功。
-export async function noteRoute(root, route, { model = "", fallback = false, kind = "request", sessionId = "", windowID = "" } = {}) {
+export async function noteRoute(root, route, { model = "", requestedModel = model, decision = null, fallback = false, kind = "request", sessionId = "", windowID = "" } = {}) {
   let host = "";
   try { host = new URL(route.endpoint).hostname; } catch { host = route.endpoint || ""; }
   const entry = {
@@ -351,7 +352,14 @@ export async function noteRoute(root, route, { model = "", fallback = false, kin
     name: route.name,
     host,
     model,
-    requestedModel: model,
+    requestedModel,
+    decision: decision ? {
+      selectedSlug: String(decision.slug || ""),
+      category: String(decision.category || ""),
+      selectedBy: String(decision.provenance?.selectedBy || ""),
+      primary: String(decision.provenance?.primary || ""),
+      fallbackReason: String(decision.provenance?.fallbackReason || ""),
+    } : null,
     observedModel: "",
     protocol: route.protocol || "",
     fallback,
@@ -681,11 +689,17 @@ export function createGateway(store = new ModelStore(), options = {}) {
       let payloadBytesNote = "";
       // 压缩只做一次：预检做过就不再重复，避免「压了又压」把会话掏空。
       let compactionAttempted = false;
+      let automaticDecision = null;
       if (switched) {
-        const table = buildRouterTable((await store.read()).routes);
-        const entry = routerTableEntry(table, payload.model);
-        if (!entry) return sendJSON(response, 400, { error: { code: "model_not_found", type: "invalid_request_error", message: "当前模型标识已失效或被归档，请在本对话的模型选择器中重新选择模型后继续；这不是额度不足。" } });
-        route = entry.route;
+        if (payload.model === automaticModelSlug) {
+          automaticDecision = await resolveAutomaticRoute(store, payload, options);
+          route = automaticDecision.route;
+        } else {
+          const table = buildRouterTable((await store.read()).routes);
+          const entry = routerTableEntry(table, payload.model);
+          if (!entry) return sendJSON(response, 400, { error: { code: "model_not_found", type: "invalid_request_error", message: "当前模型标识已失效或被归档，请在本对话的模型选择器中重新选择模型后继续；这不是额度不足。" } });
+          route = entry.route;
+        }
         payload.model = route.model;
       } else if (!route.model || payload.model !== route.model) {
         return sendJSON(response, 400, { error: { message: "模型与实例不匹配，请在助手中创建对应实例" } });
@@ -724,7 +738,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
         }
         // 一轮压缩通常够；不够就再压一轮（最多三轮），实在压不下去才交给供应商判。
         for (let pass = 0; pass < 3 && estimate > budget; pass += 1) {
-          const compacted = await compactForWindow({ store, route, payload, limit: budget, signal: abort.signal, force: true, authFile, windowID: authorized.windowID });
+          const compacted = await compactForWindow({ store, route, payload, limit: budget, signal: abort.signal, force: true, authFile, windowID: authorized.windowID, restrictSummarizer: Boolean(automaticDecision) });
           if (!compacted) break;
           payload.input = compacted.input;
           payloadBytesNote = compacted.note;
@@ -757,7 +771,9 @@ export function createGateway(store = new ModelStore(), options = {}) {
       release = await localQueue.acquire(busyKey, AbortSignal.any([abort.signal, AbortSignal.timeout(600000)]));
       if ((await store.route(route.id)).archived) throw new Error("此模型已停用");
       // 供应商只实现了一种接口时，按 404/405 自动换成能用的那种并记下来，用户不必先猜对接口格式。
-      const candidates = [{ route, key }, ...(await failoverRoutes(store, route)).map((entry) => ({ route: entry, key: null }))];
+      // Auto qualification applies to the selected route only. Its saved fallback
+      // may not have passed the task's capability validation.
+      const candidates = [{ route, key }, ...(automaticDecision ? [] : (await failoverRoutes(store, route)).map((entry) => ({ route: entry, key: null })))];
       let served = false;
       let lastError = null;
       let eventsSent = false;
@@ -767,7 +783,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
         const targetKey = candidate.key ?? (await store.secret(target.credentialID));
         // started 先证明请求确实发出；完成后再原位改为 completed，不能把“尝试过”冒充“切换成功”。
         if (candidateIndex > 0) await noteFallback(store.root, route, target, errorMessage(lastError ?? new Error("首选条目不可用")), { sessionId: payload.session_id });
-        const routeAudit = await noteRoute(store.root, target, { model: target.model, fallback: candidateIndex > 0, sessionId: payload.session_id, windowID: authorized.windowID });
+        const routeAudit = await noteRoute(store.root, target, { model: target.model, requestedModel: automaticDecision ? automaticModelSlug : target.model, decision: automaticDecision, fallback: candidateIndex > 0, sessionId: payload.session_id, windowID: authorized.windowID });
         // 从真正发起请求就开始计时：供应商连响应头都不给的情况同样会断开并转备用。
         const callSignal = attemptSignal();
         const attempts = protocolChain(target.protocol);
@@ -898,7 +914,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
             }
             if (!compactionAttempted && isContextOverflow(error)) {
               compactionAttempted = true;
-              const retried = await compactForWindow({ store, route, payload, limit: budget, signal: abort.signal, authFile, windowID: authorized.windowID });
+              const retried = await compactForWindow({ store, route, payload, limit: budget, signal: abort.signal, authFile, windowID: authorized.windowID, restrictSummarizer: Boolean(automaticDecision) });
               if (retried) {
                 payload.input = retried.input;
                 payloadBytesNote = retried.note;
@@ -929,7 +945,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
         return;
       }
       const code = failureCode(error.status ?? 0, error.detail || "");
-      sendJSON(response, error.status || 502, { error: { code: code || undefined, message: errorMessage(error), type: "model_gateway_error" } });
+      sendJSON(response, error.status || 502, { error: { code: error.code || code || undefined, message: errorMessage(error), type: "model_gateway_error" } });
     } finally {
       clearInterval(heartbeat);
       disarmIdle();
