@@ -117,6 +117,8 @@ zsh scripts/package-release.sh
 
 `fetch-runtime.sh` 从 Node.js 官方获取固定版本并校验 SHA-256；新构建内置运行时。`install-v2.sh` 备份旧应用、安装新版本和用户级网关服务。直接打开 App 也会自动启动缺失的网关。旧版 install.sh 和 route-manager 保留用于 1.x 兼容，不用于 2.x 发布。
 
+源码版的独立本机管理页可用 `node src/core-console.mjs` 启动。它复用现有模型库和网关，管理上游 Key、给其他智能体发放可撤销的代理密钥，并显示请求数；不会修改已安装 App。接入地址、限制和费用证据见 [核心管理页说明](docs/CORE-CONSOLE.md)。
+
 ## 代码结构
 
 - `Sources/`：SwiftUI 模型库、编辑器、进程调用。
