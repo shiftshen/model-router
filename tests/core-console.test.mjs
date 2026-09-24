@@ -23,6 +23,8 @@ test("core console manages local credentials and revocable agent proxy keys", as
     const base = address.split("/#")[0];
     const admin = address.split("/#")[1];
     const call = (url, token, method = "GET", data) => fetch(base + url, { method, headers: { authorization: `Bearer ${token}`, ...(data ? { "content-type": "application/json" } : {}) }, body: data ? JSON.stringify(data) : undefined });
+    const html = await (await fetch(base)).text();
+    assert.doesNotThrow(() => new Function(html.split("<script>")[1].split("</script>")[0]));
     assert.equal((await call("/api/status", "wrong")).status, 401);
     assert.equal((await call("/api/status", admin)).status, 200);
     const created = await (await call("/api/agents", admin, "POST", { id: "codex" })).json();
