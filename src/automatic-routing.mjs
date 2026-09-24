@@ -113,6 +113,13 @@ export async function qualifiedAutomaticCandidates(store, requiredCategories, pr
         && Date.parse(item.completedAt ?? item.at) > Date.parse(incompatible.completedAt ?? incompatible.at))) continue;
     }
     if (resolveContextWindow(route) < (Number(profile.contextRequirement) || 0) + (Number(profile.outputRequirement) || 0)) continue;
+    const local = route.noKey && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(new URL(route.endpoint).hostname);
+    if (local) {
+      try {
+        const available = await fetch(`${route.endpoint}/models`, { signal: AbortSignal.timeout(3000) });
+        if (!available.ok || !(await available.json())?.data?.some((item) => item?.id === route.model)) continue;
+      } catch { continue; }
+    }
     const capabilities = ["coding", ...categories.filter((category) => Number(validation.byCategory?.[category]) >= 80)];
     qualified.push({
       route,
@@ -122,7 +129,7 @@ export async function qualifiedAutomaticCandidates(store, requiredCategories, pr
         capabilities, modalities: ["text"], languages: ["zh", "en"],
         contextWindow: resolveContextWindow(route), maxOutput: 4096,
         costTier: route.noKey ? 1 : 3, latencyTier: 3,
-        privacy: /^(localhost|127\.0\.0\.1|\[::1\])$/.test(new URL(route.endpoint).hostname) ? "local" : "remote",
+        privacy: local ? "local" : "remote",
         status: "qualified", credentialStatus: "active",
       },
     });
@@ -195,9 +202,13 @@ export async function resolveAutomaticRoute(store, payload, { recommendAutomatic
   if (profile.modalities.includes("image")) throw automaticError("auto_no_qualified_model", "当前模型能力验证未覆盖图片任务");
   const qualified = await qualifiedAutomaticCandidates(store, requiredCategories, profile);
   if (!qualified.length) throw automaticError("auto_no_qualified_model", "没有通过当前任务所需能力验证的模型，请先在应用中运行连接和能力验证");
+  // Local models are the emergency/low-cost fallback, not the primary route
+  // while an independently billed API route is qualified for this turn.
+  const remote = qualified.filter(({ candidate }) => candidate.privacy !== "local");
+  const primaryCandidates = remote.length ? remote : qualified;
   const recommend = recommendAutomatic ?? ((input) => recommendWithEngineCLI(enginePath || process.env.MODEL_ROUTER_ENGINE_PATH, input, store.root));
   let decision;
-  try { decision = await recommend({ profile, candidates: qualified.map(({ candidate }) => candidate) }); }
+  try { decision = await recommend({ profile, candidates: primaryCandidates.map(({ candidate }) => candidate) }); }
   catch (error) {
     if (error?.code?.startsWith("auto_")) throw error;
     throw automaticError("auto_engine_unavailable", "自动选模引擎无法使用");
@@ -210,11 +221,11 @@ export async function resolveAutomaticRoute(store, payload, { recommendAutomatic
     || roleSelections.some((item) => item?.id !== selected.id || item?.modelId !== selected.modelId || item?.provider !== selected.provider)) {
     throw automaticError("auto_no_single_model", "自动选模未给出单模型的合格结果");
   }
-  const found = qualified.find(({ candidate }) => candidate.id === selected.id
+  const found = primaryCandidates.find(({ candidate }) => candidate.id === selected.id
     && candidate.modelId === selected.modelId && candidate.provider === selected.provider);
   if (!found) throw automaticError("auto_selection_mismatch", "自动选模结果与已验证模型不匹配");
   const fallbackRoutes = qualified.filter((entry) => entry !== found)
-    .sort((left, right) => right.score - left.score)
+    .sort((left, right) => (left.candidate.privacy === "local") - (right.candidate.privacy === "local") || right.score - left.score)
     .slice(0, 2).map((entry) => entry.route);
   return { route: found.route, slug: found.candidate.id, category, provenance: decision.provenance ?? null, fallbackRoutes };
 }
