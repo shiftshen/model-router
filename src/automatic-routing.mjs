@@ -31,14 +31,19 @@ function latestUserText(payload) {
 // Only a small, fixed vocabulary leaves the gateway. User text and history stay local.
 export function profileFromPayload(payload) {
   const text = latestUserText(payload);
-  const category = /debug|bug|报错|排查|修复|错误|失败|test|测试/i.test(text) ? "debugging"
+  const simple = /^\s*(?:what\s+is\s+)?\d+\s*[+\-*/]\s*\d+\s*(?:[=?]|\s|$)/i.test(text)
+    || /^\s*(?:你好|hi|hello|谢谢|thank you)[!！。,.\s]*$/i.test(text);
+  const hasTools = Array.isArray(payload?.tools) && payload.tools.length > 0;
+  const category = /debug|bug|报错|排查|修复|错误|fix the|investigate/i.test(text) ? "debugging"
+    : /规划|架构|architecture|roadmap|design decisions|设计方案/i.test(text) ? "planning"
     : /front.?end|frontend|ui|css|界面|页面|按钮|组件|布局/i.test(text) ? "frontend"
     : /api|server|backend|后端|接口|数据库|网关/i.test(text) ? "backend"
     : /tool|工具|权限|安全|删除|执行命令/i.test(text) ? "tool_use"
     : "general";
   const inputBytes = Number(payload?.__bytes) || Buffer.byteLength(JSON.stringify(payload?.input ?? ""));
   const requiredCategories = category === "general" ? [] : [category];
-  if (inputBytes > 400_000) requiredCategories.push("long_context");
+  if (hasTools && !requiredCategories.includes("tool_use")) requiredCategories.push("tool_use");
+  if (inputBytes > 400_000 && !requiredCategories.includes("long_context")) requiredCategories.push("long_context");
   const hasImage = Array.isArray(payload?.input) && payload.input.some((entry) =>
     Array.isArray(entry?.content) && entry.content.some((part) => part?.type === "input_image"));
   return {
@@ -46,8 +51,8 @@ export function profileFromPayload(payload) {
     requiredCategories,
     profile: {
       taskType: "code",
-      difficulty: inputBytes > 100_000 || /架构|重构|复杂|发布|上线|refactor|release/i.test(text) ? "hard" : "medium",
-      requiredCapabilities: ["coding", ...requiredCategories.filter((item) => item !== "planning" && item !== "long_context")],
+      difficulty: inputBytes > 100_000 || /架构|重构|复杂|发布|上线|refactor|release|architecture|design the system|plan the architecture/i.test(text) ? "hard" : (simple ? "easy" : "medium"),
+      requiredCapabilities: ["coding", ...requiredCategories.filter((item) => item !== "long_context")],
       modalities: hasImage ? ["text", "image"] : ["text"],
       languages: ["zh", "en"],
       contextRequirement: Math.ceil(inputBytes / 3),
@@ -63,9 +68,12 @@ async function readEvidence(root, directory, id) {
   catch { return null; }
 }
 
-export async function qualifiedAutomaticCandidates(store, requiredCategories) {
+export async function qualifiedAutomaticCandidates(store, requiredCategories, profile = {}) {
   const routes = (await store.read()).routes;
   const table = buildRouterTable(routes);
+  let routeLog = [];
+  try { routeLog = JSON.parse(await fs.readFile(path.join(store.root, "route-log.json"), "utf8")); } catch { }
+  if (!Array.isArray(routeLog)) routeLog = [];
   const qualified = [];
   for (const { slug, route } of table) {
     if (slug === automaticModelSlug || route.archived || ["oauth", "chatgpt"].includes(route.protocol) || !route.model
@@ -86,16 +94,34 @@ export async function qualifiedAutomaticCandidates(store, requiredCategories) {
       || validation.routeId !== route.id || validation.model !== route.model
       || validation.endpoint !== route.endpoint || validation.protocol !== route.protocol
       || validation.credentialVersion !== credentialVersion) continue;
-    if (!categories.some((category) => Number(validation.byCategory?.[category]) >= 80)
+    if ((Number(validation.score) || 0) < (profile.difficulty === "hard" ? 80 : 60)
+      || !categories.some((category) => Number(validation.byCategory?.[category]) >= 80)
       || !requiredCategories.every((category) => categories.includes(category) && Number(validation.byCategory?.[category]) >= 80)) continue;
+    // Short capability probes are not proof of an advertised 128K/1M context.
+    // Large turns must fail closed until a real long-input validation exists.
+    if (requiredCategories.includes("long_context") || (Number(profile.contextRequirement) || 0) > 32000) continue;
+    if (route.model === "qwen3-vl:latest" && (profile.difficulty !== "easy" || requiredCategories.includes("tool_use"))) continue;
+    const failures = routeLog.filter((item) => item.route === route.id && item.status === "failed"
+      && /insufficient_quota|quota.{0,25}(?:exhausted|depleted|insufficient)|额度.{0,8}(?:不足|耗尽|用尽)/i.test(String(item.error ?? "")));
+    const lastFailure = failures.at(-1);
+    if (lastFailure && !routeLog.some((item) => item.route === route.id && item.status === "completed"
+      && Date.parse(item.completedAt ?? item.at) > Date.parse(lastFailure.completedAt ?? lastFailure.at))) continue;
+    if (requiredCategories.includes("tool_use")) {
+      const incompatible = routeLog.filter((item) => item.route === route.id && item.status === "failed"
+        && /custom tools require|additional_tools requires|unsupported tool|工具.{0,12}不支持/i.test(String(item.error ?? ""))).at(-1);
+      if (incompatible && !routeLog.some((item) => item.route === route.id && item.status === "completed"
+        && Date.parse(item.completedAt ?? item.at) > Date.parse(incompatible.completedAt ?? incompatible.at))) continue;
+    }
+    if (resolveContextWindow(route) < (Number(profile.contextRequirement) || 0) + (Number(profile.outputRequirement) || 0)) continue;
     const capabilities = ["coding", ...categories.filter((category) => Number(validation.byCategory?.[category]) >= 80)];
     qualified.push({
       route,
+      score: Number(validation.score) || 0,
       candidate: {
         id: slug, modelId: route.model, provider: route.id,
         capabilities, modalities: ["text"], languages: ["zh", "en"],
         contextWindow: resolveContextWindow(route), maxOutput: 4096,
-        costTier: 3, latencyTier: 3,
+        costTier: route.noKey ? 1 : 3, latencyTier: 3,
         privacy: /^(localhost|127\.0\.0\.1|\[::1\])$/.test(new URL(route.endpoint).hostname) ? "local" : "remote",
         status: "qualified", credentialStatus: "active",
       },
@@ -167,7 +193,7 @@ export async function recommendWithEngineCLI(enginePath, input, root) {
 export async function resolveAutomaticRoute(store, payload, { recommendAutomatic, enginePath } = {}) {
   const { category, requiredCategories, profile } = profileFromPayload(payload);
   if (profile.modalities.includes("image")) throw automaticError("auto_no_qualified_model", "当前模型能力验证未覆盖图片任务");
-  const qualified = await qualifiedAutomaticCandidates(store, requiredCategories);
+  const qualified = await qualifiedAutomaticCandidates(store, requiredCategories, profile);
   if (!qualified.length) throw automaticError("auto_no_qualified_model", "没有通过当前任务所需能力验证的模型，请先在应用中运行连接和能力验证");
   const recommend = recommendAutomatic ?? ((input) => recommendWithEngineCLI(enginePath || process.env.MODEL_ROUTER_ENGINE_PATH, input, store.root));
   let decision;
@@ -187,5 +213,8 @@ export async function resolveAutomaticRoute(store, payload, { recommendAutomatic
   const found = qualified.find(({ candidate }) => candidate.id === selected.id
     && candidate.modelId === selected.modelId && candidate.provider === selected.provider);
   if (!found) throw automaticError("auto_selection_mismatch", "自动选模结果与已验证模型不匹配");
-  return { route: found.route, slug: found.candidate.id, category, provenance: decision.provenance ?? null };
+  const fallbackRoutes = qualified.filter((entry) => entry !== found)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 2).map((entry) => entry.route);
+  return { route: found.route, slug: found.candidate.id, category, provenance: decision.provenance ?? null, fallbackRoutes };
 }

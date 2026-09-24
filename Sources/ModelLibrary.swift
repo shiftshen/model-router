@@ -256,6 +256,13 @@ struct DayUsage: Decodable, Hashable {
 }
 
 struct RecentRoute: Decodable, Identifiable, Hashable {
+    struct Decision: Decodable, Hashable {
+        var selectedSlug: String?
+        var category: String?
+        var selectedBy: String?
+        var primary: String?
+        var fallbackReason: String?
+    }
     var requestId: String?
     var at: String
     var route: String
@@ -263,6 +270,7 @@ struct RecentRoute: Decodable, Identifiable, Hashable {
     var host: String
     var model: String?
     var requestedModel: String?
+    var decision: Decision?
     var observedModel: String?
     var `protocol`: String?
     var fallback: Bool?
@@ -663,6 +671,11 @@ final class LibraryViewModel: ObservableObject {
         if newWindowModel.isEmpty, let first = response.switchModels?.first { newWindowModel = first.id }
         showSwitch = response.ok
         busy = false
+    }
+
+    func refreshRoutes() async {
+        let response = await call(["route-status"])
+        if response.ok, let routes = response.recentRoutes { recentRoutes = routes }
     }
 
     var runningWindowCount: Int { windows.filter { $0.running == true }.count }

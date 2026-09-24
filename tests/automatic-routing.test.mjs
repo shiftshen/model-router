@@ -16,7 +16,7 @@ async function fixture(t) {
   await fs.mkdir(path.join(root, "checks"));
   await fs.mkdir(path.join(root, "validation"));
   await fs.writeFile(path.join(root, "checks", "qualified.json"), JSON.stringify({ ok: true, testedAt: new Date().toISOString(), endpoint: route.endpoint, model: route.model, protocol: route.protocol, credentialVersion: await store.credentialVersion(route.credentialID) }));
-  await fs.writeFile(path.join(root, "validation", "qualified.json"), JSON.stringify({ mode: "live", testedAt: new Date().toISOString(), routeId: route.id, model: route.model, endpoint: route.endpoint, protocol: route.protocol, credentialVersion: await store.credentialVersion(route.credentialID), byCategory: { planning: 100, backend: 100, debugging: 100, long_context: 100 } }));
+  await fs.writeFile(path.join(root, "validation", "qualified.json"), JSON.stringify({ mode: "live", score: 95, testedAt: new Date().toISOString(), routeId: route.id, model: route.model, endpoint: route.endpoint, protocol: route.protocol, credentialVersion: await store.credentialVersion(route.credentialID), byCategory: { planning: 100, backend: 100, debugging: 100, tool_use: 100, long_context: 100 } }));
   return { store, route, root };
 }
 
@@ -26,6 +26,18 @@ test("profile only exposes fixed task labels, never prompt or history", () => {
   assert.equal(result.category, "debugging");
   assert.deepEqual(result.profile.requiredCapabilities, ["coding", "debugging"]);
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE_PROMPT_MARKER/);
+});
+
+test("simple arithmetic, planning, and Codex tool use have distinct profiles", () => {
+  const simple = profileFromPayload({ input: "What is 1+1? Reply with only the number." });
+  assert.equal(simple.profile.difficulty, "easy");
+  assert.equal(simple.category, "general");
+  const planning = profileFromPayload({ input: "Plan the architecture for an API", tools: [{ type: "function", name: "shell" }] });
+  assert.equal(planning.category, "planning");
+  assert.equal(planning.profile.difficulty, "hard");
+  assert.deepEqual(planning.requiredCategories, ["planning", "tool_use"]);
+  const architecture = profileFromPayload({ input: "规划复杂项目架构" });
+  assert.equal(architecture.category, "planning");
 });
 
 test("candidate requires current check, live validation, category score and credential", async (t) => {
@@ -40,6 +52,21 @@ test("candidate requires current check, live validation, category score and cred
   await fs.writeFile(file, JSON.stringify(validation));
   await store.writeSecret("qualified", "rotated-key");
   assert.equal((await qualifiedAutomaticCandidates(store, ["backend"])).length, 0);
+});
+
+test("hard tasks need overall quality, quota failures stay excluded, long context is not inferred", async (t) => {
+  const { store, root, route } = await fixture(t);
+  const file = path.join(root, "validation", "qualified.json");
+  const validation = JSON.parse(await fs.readFile(file, "utf8"));
+  validation.score = 65;
+  await fs.writeFile(file, JSON.stringify(validation));
+  assert.equal((await qualifiedAutomaticCandidates(store, ["backend"], { difficulty: "hard" })).length, 0);
+  assert.equal((await qualifiedAutomaticCandidates(store, ["backend"], { difficulty: "easy" })).length, 1);
+  validation.score = 95;
+  await fs.writeFile(file, JSON.stringify(validation));
+  assert.equal((await qualifiedAutomaticCandidates(store, ["long_context"], { difficulty: "hard" })).length, 0);
+  await fs.writeFile(path.join(root, "route-log.json"), JSON.stringify([{ route: route.id, at: new Date().toISOString(), status: "failed", error: "insufficient_quota" }]));
+  assert.equal((await qualifiedAutomaticCandidates(store, ["backend"], { difficulty: "hard" })).length, 0);
 });
 
 test("resolved route must match candidate slug, upstream model and provider; multiple roles fail", async (t) => {
