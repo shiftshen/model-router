@@ -6,6 +6,7 @@ struct ModelLibraryView: View {
     // 标题栏的版本号从 bundle 读，别写死——写死过一次就变成「装的明明是新版，界面还显示旧版」。
     private var bundleVersion: String { (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "?" }
     private let updateTimer = Timer.publish(every: 6 * 3600, on: .main, in: .common).autoconnect()
+    private let routeTimer = Timer.publish(every: 4, on: .main, in: .common).autoconnect()
 
     @StateObject private var library = LibraryViewModel()
     @State private var editing: ManagedModel?
@@ -14,6 +15,7 @@ struct ModelLibraryView: View {
 
     @State private var showModels = false
     @State private var showTaskRunner = false
+    @State private var routeWindow: WorkWindow?
     @State private var didSizeWindow = false
     @State private var unmanagedDeleteTarget: UnmanagedWindow?
 
@@ -30,6 +32,7 @@ struct ModelLibraryView: View {
         .frame(minWidth: 820, minHeight: 580)
         .sheet(isPresented: $showModels) { modelLibrary }
         .sheet(isPresented: $showTaskRunner) { TaskRunnerView(library: library) }
+        .sheet(item: $routeWindow) { window in routeSheet(window) }
         .sheet(item: $renameTarget) { window in renameSheet(window) }
         .confirmationDialog("确认删除这个单模型窗口？", isPresented: Binding(
             get: { unmanagedDeleteTarget != nil },
@@ -76,6 +79,9 @@ struct ModelLibraryView: View {
         }
         .onReceive(updateTimer) { _ in
             Task { await library.checkForUpdates(currentVersion: bundleVersion, silent: true) }
+        }
+        .onReceive(routeTimer) { _ in
+            if NSApp.isActive { Task { await library.refreshRoutes() } }
         }
         .onAppear { sizeWindowOnce() }
         .task {
@@ -342,6 +348,7 @@ struct ModelLibraryView: View {
 
     private func windowCard(_ window: WorkWindow) -> some View {
         let running = window.running == true
+        let latestRoute = library.recentRoutes.first { $0.windowID == window.id && $0.requestedModel == "model-router-auto" }
         return VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 7) {
                 Circle().fill(running ? Color.green : Color.secondary.opacity(0.35)).frame(width: 8, height: 8)
@@ -378,6 +385,12 @@ struct ModelLibraryView: View {
                     .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                 Text("API 工作窗口 · 按所选供应商 Key 计费")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
+                if let latestRoute {
+                    Text("自动最近一轮：\(latestRoute.name ?? latestRoute.route) · \(latestRoute.status == "completed" ? "已完成" : (latestRoute.status == "failed" ? "失败" : "进行中"))")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(latestRoute.status == "failed" ? .red : (latestRoute.status == "completed" ? .green : .orange))
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
             HStack(spacing: 8) {
@@ -386,6 +399,8 @@ struct ModelLibraryView: View {
                 if running {
                     Button("关闭") { Task { await library.closeWindow(window.id) } }.controlSize(.small).disabled(library.busy)
                 }
+                Button("本窗口路线") { routeWindow = window; Task { await library.refreshRoutes() } }
+                    .controlSize(.small)
                 Spacer()
             }
         }
@@ -395,6 +410,63 @@ struct ModelLibraryView: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(running ? Color.green.opacity(0.35) : Color.secondary.opacity(0.15), lineWidth: 1))
         .contentShape(RoundedRectangle(cornerRadius: 10))
         .help(window.homePath ?? "")
+    }
+
+    private func routeSheet(_ window: WorkWindow) -> some View {
+        let entries = library.recentRoutes.filter { $0.windowID == window.id }
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(window.name) · 每轮实际路线").font(.title2.bold())
+                    Text("只显示此窗口的网关记录；手选模型不会被自动改派。模型自述不算调用证明。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("刷新") { Task { await library.refreshRoutes() } }
+                Button("完成") { routeWindow = nil }.keyboardShortcut(.defaultAction)
+            }
+            Divider()
+            if entries.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "point.3.connected.trianglepath.dotted").font(.largeTitle).foregroundStyle(.secondary)
+                    Text("还没有请求记录").font(.headline)
+                    Text("在这个窗口发送任务后，这里会显示实际请求。").font(.caption).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(entries) { entry in
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack {
+                                    Text(entry.requestedModel == "model-router-auto" ? "自动选择" : "手动选择")
+                                        .font(.caption.weight(.bold))
+                                    Text(entry.decision?.category ?? "")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    Spacer()
+                                    Text(entry.at).font(.caption.monospaced()).foregroundStyle(.secondary)
+                                }
+                                Text("选中路线：\(entry.decision?.selectedSlug ?? entry.requestedModel ?? "未知") · 实际请求：\(entry.name ?? entry.route) / \(entry.model ?? "未知")")
+                                    .font(.callout.weight(.semibold)).textSelection(.enabled)
+                                Text("选模来源：\(entry.decision?.selectedBy ?? "用户手选") · 网关请求 ID：\(entry.requestId ?? "未记录")")
+                                    .font(.caption.monospaced()).textSelection(.enabled)
+                                Text("响应模型：\(entry.observedModel?.isEmpty == false ? entry.observedModel! : "未返回") · \(entry.status == "completed" ? "已完成" : (entry.status == "failed" ? "失败" : "进行中"))")
+                                    .font(.caption).foregroundStyle(entry.status == "failed" ? .red : .secondary)
+                                if entry.fallback == true || entry.decision?.fallbackReason?.isEmpty == false || entry.error?.isEmpty == false {
+                                    Text("切换或失败原因：\([entry.decision?.fallbackReason, entry.error].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "；"))")
+                                        .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                                }
+                            }
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+                        }
+                    }
+                }
+            }
+        }
+        .padding(22)
+        .frame(width: 760, height: 560)
+        .task { await library.refreshRoutes() }
     }
 
     // 旧版专用窗口不再允许打开，只保留清理入口，避免用户又回到单模型模式。

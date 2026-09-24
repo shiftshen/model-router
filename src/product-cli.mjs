@@ -174,6 +174,9 @@ async function main() {
         : "还没有记录（网关重启后才会开始记录）",
     };
   }
+  if (command === "route-status") {
+    return { ok: true, recentRoutes: await readRecentRoutes(store.root, 30) };
+  }
   if (command === "live-threads") {
     const minutes = Number(id) > 0 ? Number(id) : 30;
     const rows = await liveThreadRows(store.root, (await store.read()).routes, { withinMinutes: minutes });

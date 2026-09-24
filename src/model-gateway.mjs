@@ -518,6 +518,7 @@ function wireModelCapture(limit = 512 * 1024) {
   return {
     add,
     model: () => modelFromWire(Buffer.concat(chunks).toString("utf8")),
+    completed: () => /(?:event:\s*response\.completed\b|"type"\s*:\s*"response\.completed"|data:\s*\[DONE\])/i.test(Buffer.concat(chunks).toString("utf8")),
   };
 }
 
@@ -776,10 +777,12 @@ export function createGateway(store = new ModelStore(), options = {}) {
       release = await localQueue.acquire(busyKey, AbortSignal.any([abort.signal, AbortSignal.timeout(600000)]));
       if ((await store.route(route.id)).archived) throw new Error("此模型已停用");
       // 供应商只实现了一种接口时，按 404/405 自动换成能用的那种并记下来，用户不必先猜对接口格式。
-      // Auto qualification applies to the selected route only. Its saved fallback
-      // may not have passed the task's capability validation.
+      // Auto can retry only models from this turn's qualified candidate snapshot.
+      // A route's manually configured fallback may not meet this task's needs.
       const taskRequest = /^task-[0-9a-f-]{36}-a[1-3]$/.test(payload.session_id);
-      const candidates = [{ route, key }, ...(automaticDecision || taskRequest ? [] : (await failoverRoutes(store, route)).map((entry) => ({ route: entry, key: null })))];
+      const fallbackRoutes = automaticDecision ? automaticDecision.fallbackRoutes
+        : taskRequest ? [] : await failoverRoutes(store, route);
+      const candidates = [{ route, key }, ...fallbackRoutes.map((entry) => ({ route: entry, key: null }))];
       let served = false;
       let lastError = null;
       let eventsSent = false;
@@ -789,13 +792,18 @@ export function createGateway(store = new ModelStore(), options = {}) {
         const targetKey = candidate.key ?? (await store.secret(target.credentialID));
         // started 先证明请求确实发出；完成后再原位改为 completed，不能把“尝试过”冒充“切换成功”。
         if (candidateIndex > 0) await noteFallback(store.root, route, target, errorMessage(lastError ?? new Error("首选条目不可用")), { sessionId: payload.session_id });
-        const routeAudit = await noteRoute(store.root, target, { model: target.model, requestedModel: automaticDecision ? automaticModelSlug : target.model, decision: automaticDecision, fallback: candidateIndex > 0, sessionId: payload.session_id, windowID: authorized.windowID });
+        const routeDecision = automaticDecision && candidateIndex > 0
+          ? { ...automaticDecision, slug: candidates[candidateIndex].route.routerSlug ?? target.id,
+            provenance: { ...automaticDecision.provenance, fallbackReason: errorMessage(lastError ?? new Error("首选模型不可用")) } }
+          : automaticDecision;
+        const routeAudit = await noteRoute(store.root, target, { model: target.model, requestedModel: automaticDecision ? automaticModelSlug : target.model, decision: routeDecision, fallback: candidateIndex > 0, sessionId: payload.session_id, windowID: authorized.windowID });
         // 从真正发起请求就开始计时：供应商连响应头都不给的情况同样会断开并转备用。
         const callSignal = attemptSignal();
         const attempts = protocolChain(target.protocol);
         for (let index = 0; index < attempts.length; index += 1) {
           const attempt = attempts[index];
           const targetPayload = payloadForRoute(payload, target);
+          let streamedCapture = null;
           try {
             let observedModel = "";
             if (attempt === "chatgpt") {
@@ -822,6 +830,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
                 sseStream = true;
                 eventsSent = true;
                 const capture = wireModelCapture();
+                streamedCapture = capture;
                 await forwardCapturedBody(result.body, response, capture);
                 observedModel = capture.model();
                 await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
@@ -838,6 +847,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
               armIdle();
               eventsSent = true;
               const capture = wireModelCapture();
+              streamedCapture = capture;
               await forwardCapturedBody(result.body, response, capture);
               observedModel = capture.model();
               await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
@@ -878,6 +888,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
                 });
                 const decoder = new TextDecoder();
                 const capture = wireModelCapture();
+                streamedCapture = capture;
                 armIdle();
                 for await (const chunk of Readable.fromWeb(result.body)) {
                   armIdle();
@@ -895,6 +906,15 @@ export function createGateway(store = new ModelStore(), options = {}) {
             break;
           } catch (error) {
             lastError = error;
+            // Codex may close SSE immediately after receiving response.completed.
+            // The upstream finished and the answer is visible; do not record
+            // that completed model call as a failed switch merely because the
+            // client closed before our final response.end().
+            if (abort.signal.aborted && streamedCapture?.completed()) {
+              await confirmRoute(store.root, routeAudit.requestId, { observedModel: streamedCapture.model(), protocol: attempt });
+              served = true;
+              break;
+            }
             if (abort.signal.aborted) {
               await failRoute(store.root, routeAudit.requestId, { protocol: attempt, error: errorMessage(error) });
               throw error;

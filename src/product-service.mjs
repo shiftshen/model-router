@@ -230,7 +230,7 @@ async function requireCodexApp() {
 }
 
 // 网关每次请求都会写一条「走了谁」，这里读出来给界面用。
-export async function readRecentRoutes(root, limit = 8) {
+export async function readRecentRoutes(root, limit = 30) {
   try {
     const list = JSON.parse(await fs.readFile(path.join(root, "route-log.json"), "utf8"));
     if (!Array.isArray(list)) return [];
