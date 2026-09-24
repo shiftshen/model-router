@@ -39,13 +39,14 @@ async function fixture(context) {
   return new ModelStore(root);
 }
 
-test("seeds mainstream providers without pretending keys exist", async (context) => {
+test("新库的未配置 DeepSeek 不占常用列表，模板仍可主动选择", async (context) => {
   const store = await fixture(context);
   const data = await store.publicData();
   assert.equal(data.routes.length, 18);
   assert.equal(data.templates.length, 14);
   assert.ok(data.routes.every((route) => !route.hasKey));
-  assert.equal(data.routes.find((route) => route.id === "deepseek-flash").endpoint, "https://api.deepseek.com/v1");
+  assert.ok(data.routes.filter((route) => route.id === "deepseek-flash" || route.id === "deepseek-pro").every((route) => route.hidden));
+  assert.ok(data.templates.some((template) => template.id === "deepseek"));
   assert.ok(data.routes.filter((route) => route.id.startsWith("s5090-")).every((route) => route.protocol === "chat"));
   assert.equal(data.routes.find((route) => route.id === "official").name, "ChatGPT Desktop（官方）");
   assert.equal(data.routes.find((route) => route.id === "official").model, "");
@@ -210,6 +211,25 @@ test("rejects traversal, URL credentials, nonlocal cleartext and malformed field
   // 0 / 留空表示「按模型自动匹配」，查不到也要有 512K 兜底，而不是卡在 128K。
   assert.equal(validateRoute({ ...base, contextWindow: 0 }).contextWindow, 512000);
   assert.equal(validateRoute({ ...base }).contextWindow, 512000);
+  assert.equal(validateRoute({ ...base, contextWindow: 0 }).contextWindowAuto, true);
+  assert.equal(validateRoute({ ...base, contextWindow: 131072 }).contextWindowAuto, false);
+  assert.throws(() => validateRoute({ ...base, contextWindowAuto: false, contextWindow: 0 }), /自动设置/);
+});
+
+test("自动上下文随模型 ID 改变，手动值保持不变", async (context) => {
+  const store = await fixture(context);
+  const base = { id: "auto-context", name: "自动上下文", endpoint: "https://api.example.com/v1", protocol: "responses", model: "mimo-v2.6-flash", contextWindow: 0 };
+  await store.save(base, 1);
+  let route = await store.route(base.id);
+  assert.equal(route.contextWindow, 1048576);
+  assert.equal(route.contextWindowAuto, true);
+  await store.save({ ...route, model: "unknown-model" }, (await store.read()).revision);
+  route = await store.route(base.id);
+  assert.equal(route.contextWindow, 512000);
+  await store.save({ ...route, contextWindowAuto: false, contextWindow: 131072 }, (await store.read()).revision);
+  route = await store.route(base.id);
+  await store.save({ ...route, model: "mimo-v2.6-pro" }, (await store.read()).revision);
+  assert.equal((await store.route(base.id)).contextWindow, 131072);
 });
 
 test("dynamic config is idempotent, isolates provider, preserves project settings", () => {

@@ -140,7 +140,7 @@ async function refresh() {
 
 function openEditor(route) {
   const isNew = !route;
-  const current = route || { id: "model-" + crypto.randomUUID().replaceAll("-","").slice(0,20), name:"", vendor:"自定义", endpoint:"https://api.deepseek.com/v1", protocol:"responses", model:"", notes:"", docs:"", credentialID:"", noKey:false, archived:false, switchable:true, fallback:"", contextWindow:0 };
+  const current = route || { id: "model-" + crypto.randomUUID().replaceAll("-","").slice(0,20), name:"", vendor:"自定义", endpoint:"", protocol:"responses", model:"", notes:"", docs:"", credentialID:"", noKey:false, archived:false, switchable:true, fallback:"", contextWindowAuto:true, contextWindow:0 };
   byId("dialogTitle").textContent = isNew ? "新增模型" : "编辑模型";
   byId("modelId").value = current.id || "";
   byId("modelName").value = current.name || "";
@@ -150,6 +150,8 @@ function openEditor(route) {
   byId("modelEndpoint").value = current.endpoint || "";
   byId("modelKey").value = "";
   byId("modelContext").value = current.contextWindow || "";
+  byId("modelContextAuto").checked = current.contextWindowAuto === true;
+  byId("modelContext").disabled = byId("modelContextAuto").checked;
   byId("modelRuntimeProfile").value = current.runtimeProfile || "auto";
   byId("modelNoKey").checked = !!current.noKey;
   byId("modelFallback").innerHTML = '<option value="">不设置</option>' + (state.routes || []).filter((x) => x.id !== current.id && x.protocol !== "oauth" && !x.archived).map((x) => '<option value="' + escapeHtml(x.id) + '">' + escapeHtml(x.name) + '</option>').join("");
@@ -178,7 +180,8 @@ async function saveEditor(event) {
     hidden: !!prior.hidden,
     switchable: true,
     fallback: byId("modelFallback").value,
-    contextWindow: Number(byId("modelContext").value || 0)
+    contextWindowAuto: byId("modelContextAuto").checked,
+    contextWindow: byId("modelContextAuto").checked ? (prior.contextWindowAuto === true && prior.model === byId("modelModel").value.trim() ? Number(prior.contextWindow || 0) : 0) : Number(byId("modelContext").value || 0)
   };
   try {
     setStatus("正在保存…");
@@ -229,6 +232,7 @@ byId("updateBtn").addEventListener("click", () => checkUpdate(false));
 byId("addBtn").addEventListener("click", () => openEditor(null));
 byId("showArchived").addEventListener("change", renderModels);
 byId("modelSearch").addEventListener("input", renderModels);
+byId("modelContextAuto").addEventListener("change", () => { byId("modelContext").disabled = byId("modelContextAuto").checked; });
 byId("newWindowBtn").addEventListener("click", async () => { try { const id = byId("newWindowModel").value; setStatus("正在新建窗口…"); accept(await call("new-window", [id])); } catch(e){ setStatus(e.message,true); } });
 byId("modelForm").addEventListener("submit", saveEditor);
 
@@ -238,4 +242,14 @@ byId("modelForm").addEventListener("submit", saveEditor);
   await refresh();
   await checkUpdate(true);
   setInterval(() => checkUpdate(true), 6 * 60 * 60 * 1000);
+  // 其它窗口或外部配置修改模型库后，页面无需重启即可看到新模型。
+  // 只在 revision 变化时重绘，避免重置用户正在输入的表单。
+  setInterval(async () => {
+    if (document.visibilityState !== "visible" || !byId("modelDialog").open) {
+      try {
+        const data = await call("library");
+        if (Number(data.revision) !== Number(state.revision)) accept(data);
+      } catch { /* 后台刷新失败不打断当前页面 */ }
+    }
+  }, 5000);
 })();

@@ -148,6 +148,8 @@ test("窗口不写死：按模型匹配真实值，明确设置时尊重用户�
   // 用户自己填的非占位值优先——128K 对不少模型确实是正确答案
   assert.equal(resolveContextWindow({ model: "agnes-2.5-flash", contextWindow: 128000 }), 128000);
   assert.equal(resolveContextWindow({ model: "deepseek-flash", contextWindow: 1000000 }), 1000000);
+  assert.equal(resolveContextWindow({ model: "mimo-v2.6-flash", contextWindow: 0 }), 1048576);
+  assert.equal(resolveContextWindow({ model: "mimo-v2.6-flash", contextWindow: 128000, contextWindowAuto: false }), 128000);
   // 旧占位值会被表里的公开值顶掉
   assert.equal(resolveContextWindow({ model: "claude-sonnet-4-6", contextWindow: 128000 }), 200000);
   // 查不到就 512K，而不是旧的 128K

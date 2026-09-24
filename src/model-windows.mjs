@@ -19,6 +19,8 @@ const knownWindows = [
   { match: /gpt-5\.6/i, window: 272000, verified: true },
   { match: /gpt-5\.5/i, window: 272000, verified: true },
   { match: /gpt-5\.4/i, window: 272000, verified: false },
+  // 小米官方模型页和接入示例均写明 MiMo V2.6 的 1M 窗口（1048576）。
+  { match: /mimo-v2\.6-(flash|pro|pro-ultraspeed)/i, window: 1048576, verified: false },
   // DeepSeek 自家的 V4 系列标称 1M；更早的 chat/reasoner 是 128K。
   { match: /deepseek-v4|deepseek-flash/i, window: 1000000, verified: false },
   { match: /deepseek-(chat|reasoner|coder|v3)/i, window: 131072, verified: false },
@@ -55,6 +57,7 @@ export function usableWindow(value) {
 export function resolveContextWindow(route) {
   const explicit = usableWindow(route?.contextWindow);
   const known = knownContextWindow(route?.model);
+  if (explicit && route?.contextWindowAuto === false) return explicit;
   // 用户自己填的非占位值优先——128K 对不少模型确实是正确答案。
   if (explicit && explicit !== legacyPlaceholderWindow) return explicit;
   // 没有用户明确设置时，才使用本机实测值。

@@ -88,7 +88,9 @@
         </label>
         <label class="wide">API 地址<input id="modelEndpoint" maxlength="500" placeholder="https://api.example.com/v1"></label>
         <label class="wide">API Key<input id="modelKey" type="password" autocomplete="off" placeholder="留空保留现有 Key"></label>
-        <label>上下文<input id="modelContext" type="number" min="4096" max="2000000" step="1"></label>
+        <label class="check"><input id="modelContextAuto" type="checkbox"> 按模型自动设置上下文</label>
+        <label>上下文 Token 数<input id="modelContext" type="number" min="4096" max="2000000" step="1" placeholder="自动匹配"></label>
+        <div class="wide muted">已知模型按公开上限匹配；未知模型暂按 512,000 Token。手动填写时不会随模型 ID 改变。</div>
         <label>Codex 环境<select id="modelRuntimeProfile"><option value="auto">自动（本地无 Key 模型用轻量）</option><option value="lite">轻量 Lite（核心开发工具）</option><option value="full">完整 Full（Plugins / MCP / Skills）</option></select><small>环境类型更改后重开窗口生效。</small></label>
         <label>失败备用<select id="modelFallback"></select></label>
         <label class="check"><input id="modelNoKey" type="checkbox"> 不需要 Key</label>

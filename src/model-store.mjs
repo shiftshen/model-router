@@ -105,6 +105,11 @@ export function validateRoute(input) {
   // 没填（或填 0）= 自动：按模型名匹配真实窗口，查不到就 512K 兜底。
   // 填了具体数字就按填的来，但越界要拦住，不能悄悄换成兜底值。
   const suppliedWindow = input.contextWindow;
+  if (input.contextWindowAuto === false && (suppliedWindow === undefined || suppliedWindow === null || suppliedWindow === "" || Number(suppliedWindow) === 0)) {
+    throw new Error("请输入上下文 Token 数，或打开自动设置");
+  }
+  route.contextWindowAuto = input.contextWindowAuto === true
+    || (input.contextWindowAuto !== false && (suppliedWindow === undefined || suppliedWindow === null || suppliedWindow === "" || Number(suppliedWindow) === 0));
   if (suppliedWindow === undefined || suppliedWindow === null || suppliedWindow === "" || Number(suppliedWindow) === 0) {
     route.contextWindow = resolveContextWindow({ model: route.model, contextWindow: 0 });
   } else {
@@ -118,8 +123,8 @@ export function validateRoute(input) {
 function seeds() {
   const routes = [
     { id: "official", name: "ChatGPT Desktop（官方）", vendor: "OpenAI 官方", model: "", protocol: "oauth", noKey: true },
-    ...templates.filter((entry) => entry.id !== "custom").map((entry) => ({ ...entry, id: entry.id === "deepseek" ? "deepseek-flash" : entry.id, vendor: entry.name, credentialID: entry.id })),
-    { id: "deepseek-pro", name: "DeepSeek Pro", vendor: "DeepSeek 官方", model: "deepseek-v4-pro", protocol: "responses", endpoint: "https://api.deepseek.com/v1", credentialID: "deepseek" },
+    ...templates.filter((entry) => entry.id !== "custom").map((entry) => ({ ...entry, id: entry.id === "deepseek" ? "deepseek-flash" : entry.id, vendor: entry.name, credentialID: entry.id, hidden: entry.id === "deepseek" })),
+    { id: "deepseek-pro", name: "DeepSeek Pro", vendor: "DeepSeek 官方", model: "deepseek-v4-pro", protocol: "responses", endpoint: "https://api.deepseek.com/v1", credentialID: "deepseek", hidden: true },
     { id: "agnes", name: "Agnes 2.5 Flash", vendor: "已有服务", model: "agnes-2.5-flash", protocol: "responses", endpoint: "http://127.0.0.1:18790/v1" },
     { id: "s5090-qwen", name: "Qwen3.8 27B · 5090", vendor: "局域网 5090", model: "qwen3.8:27b-96k", protocol: "chat", endpoint: "http://127.0.0.1:18791/v1", noKey: true },
     { id: "s5090-ornith", name: "Ornith 1.5 35B · 5090", vendor: "局域网 5090", model: "ornith-1.5:35b-96k", protocol: "chat", endpoint: "http://127.0.0.1:18791/v1", noKey: true },
@@ -246,6 +251,9 @@ export class ModelStore {
     const route = validateRoute({ ...input, endpoint: normalizeEndpoint(input.endpoint) });
     return this.mutate(revision, async (data) => {
       const prior = data.routes.find((entry) => entry.id === route.id);
+      if (prior && route.contextWindowAuto && prior.model !== route.model) {
+        route.contextWindow = resolveContextWindow({ model: route.model, contextWindow: 0 });
+      }
       // UI does not own routing identity. Preserve it across model, name and provider edits.
       delete route.routerSlug;
       if (prior?.routerAliases) route.routerAliases = prior.routerAliases;
