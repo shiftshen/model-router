@@ -14,15 +14,17 @@
 
 3.4.0 增加独立 API 窗口的「自动选择模型」入口：按任务从已通过真实验证的模型中选择。官方账号继续使用原官方窗口。使用方法见 `docs/USER-GUIDE.md`。
 
-3.5.0 的「智能执行任务」入口提供任务画像、近期验证资格、真实网关执行、任务验收及可追溯记录。使用与限制见 [智能执行任务](docs/TASK-EXECUTION.md)。这项功能位于 Model Router 应用首页，不出现在 ChatGPT Work 的手动模型菜单中。
+3.5.0 的「智能执行任务」入口提供任务画像、近期验证资格、真实网关执行、任务验收及可追溯记录。3.5.2 在 Model Router 管理的 Codex API 工作窗口中增加按轮自动选模和实际路线显示，并修复短任务被误判为超长上下文而返回 409 的问题。官方 ChatGPT Work 的模型菜单不受影响。使用与限制见 [智能执行任务](docs/TASK-EXECUTION.md)和[按轮自动路由](docs/MODEL-ROUTER-AUTO.md)。
 
 | | |
 |---|---|
-| 版本 | **3.5.0（验收中）** |
-| 安装包 | 通过完整验收后提供通用二进制 DMG |
+| 版本 | **3.5.2** |
+| 安装包 | GitHub Release 提供通用二进制 DMG；Windows 仍为 Preview |
 | 系统要求 | macOS 12.0 起 |
 | SHA-256 | 见 `release/SHA256SUMS.txt` |
 | 签名 | Developer ID Application（Chinda Lorcharoen）；正式 Release 执行 Apple notarization + staple，并用 `spctl` / `stapler` 验证 |
+
+自动模式只在本轮已有合格备用、且供应商尚未输出正文或执行工具时切换。供应商已输出后的无缝换模不受支持；复杂任务没有合格备用时明确报错，不会把未经验证的模型充作保障。
 
 构建与发布：
 
