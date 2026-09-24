@@ -622,24 +622,31 @@ export class ProductService {
     if (route.protocol === "chatgpt") { await officialTokens({ file: path.join(this.officialHome, "auth.json") }); return { protocol: "chatgpt", changed: false, tested: [], message: "官方登录使用固定接口，无需探测第三方协议" }; }
     if (!route.model) throw new Error("请先选择模型 ID");
     const key = await this.store.secret(route.credentialID);
+    const marker = "MODEL_ASSISTANT_OK";
+    const prompt = `Reply exactly ${marker}`;
     const probes = {
-      responses: { suffix: "responses", body: { model: route.model, input: "ping", max_output_tokens: 16, store: false } },
-      chat: { suffix: "chat/completions", body: { model: route.model, messages: [{ role: "user", content: "ping" }], max_tokens: 16, stream: false } },
-      anthropic: { suffix: "messages", body: { model: route.model, max_tokens: 16, messages: [{ role: "user", content: "ping" }] } },
+      responses: { suffix: "responses", body: { model: route.model, input: prompt, max_output_tokens: 256, store: false } },
+      chat: { suffix: "chat/completions", body: { model: route.model, messages: [{ role: "user", content: prompt }], max_tokens: 256, stream: false } },
+      anthropic: { suffix: "messages", body: { model: route.model, max_tokens: 256, messages: [{ role: "user", content: prompt }] } },
     };
     const tested = [];
     for (const protocol of [route.protocol, ...["responses", "chat", "anthropic"].filter((entry) => entry !== route.protocol)]) {
       const probe = probes[protocol];
       try {
         const result = await upstream({ ...route, protocol }, key, probe.suffix, probe.body, 30000);
-        await limitedJSON(result.body);
+        const body = await limitedJSON(result.body);
+        const output = protocol === "responses"
+          ? body.output?.filter((item) => item.type === "message").flatMap((item) => item.content || []).map((part) => part.text || "").join("")
+          : protocol === "chat" ? body.choices?.[0]?.message?.content
+            : body.content?.filter((part) => part.type === "text").map((part) => part.text || "").join("");
+        if (body.status === "failed" || String(output ?? "").trim() !== marker) throw new Error("服务已响应，但未返回准确的验证文本");
         tested.push({ protocol, ok: true });
       } catch (error) {
         tested.push({ protocol, ok: false, reason: errorMessage(error) });
       }
     }
     const working = tested.filter((entry) => entry.ok).map((entry) => entry.protocol);
-    if (!working.length) throw new Error(`三套接口都没跑通，请核对地址、密钥和模型 ID：\n${tested.map((entry) => `${entry.protocol}：${entry.reason}`).join("\n")}`);
+    if (!working.length) throw new Error(`三套接口都没通过真实文本验证，请核对地址、密钥和模型 ID：\n${tested.map((entry) => `${entry.protocol}：${entry.reason}`).join("\n")}`);
     const chosen = working.includes(route.protocol) ? route.protocol : working[0];
     if (save && chosen !== route.protocol) {
       const data = await this.store.read();
@@ -709,30 +716,53 @@ export class ProductService {
     if (!route.model) throw new Error("请选择已启用且配置完整的模型");
     await this.gatewayReady();
     const started = Date.now();
-    const call = async () => {
+    const call = async (payload) => {
       const response = await fetch(`${gatewayURL}/routes/${id}/v1/responses`, {
         method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${await this.store.token(id)}` },
-        body: JSON.stringify({ model: route.model, input: "Reply exactly MODEL_ASSISTANT_OK", max_output_tokens: 256, stream: false }), signal: AbortSignal.timeout(90000),
+        body: JSON.stringify({ model: route.model, max_output_tokens: 256, stream: false, ...payload }), signal: AbortSignal.timeout(90000),
       });
       const data = await limitedJSON(response.body);
       if (!response.ok) throw new Error(data.error?.message || `调用失败 HTTP ${response.status}`);
-      return data.output?.filter((item) => item.type === "message").flatMap((item) => item.content || []).map((part) => part.text || "").join("") || "";
+      if (data.status === "failed") throw new Error(data.error?.message || "供应商返回失败状态");
+      return data;
     };
-    let output, detected = null;
-    try { output = await call(); }
+    const answer = (data) => data.output?.filter((item) => item.type === "message").flatMap((item) => item.content || []).map((part) => part.text || "").join("") || "";
+    const textPayload = { input: "Reply exactly MODEL_ASSISTANT_OK" };
+    let result, detected = null;
+    try { result = await call(textPayload); }
     catch (error) {
       // 常见情况是接口格式选错（供应商只有 Chat 或 Messages）；自动识别一次并重试，用户不需要自己猜。
       detected = await this.detectProtocol(id).catch(() => null);
       if (!detected?.changed) throw error;
-      output = await call();
+      result = await call(textPayload);
     }
     // 必须返回验证词；HTTP 200 或空 output 不能证明推理成功。
-    const verified = output.trim() === "MODEL_ASSISTANT_OK";
-    if (!verified) throw new Error("服务已响应，但未返回准确的验证文本；不能确认真实推理通过");
+    const verified = answer(result).trim() === "MODEL_ASSISTANT_OK";
+    if (!verified) {
+      detected = await this.detectProtocol(id).catch(() => null);
+      if (!detected?.changed) throw new Error("服务已响应，但未返回准确的验证文本；不能确认真实推理通过");
+      result = await call(textPayload);
+      if (answer(result).trim() !== "MODEL_ASSISTANT_OK") throw new Error("接口已切换，但仍未返回准确的验证文本；不能确认真实推理通过");
+    }
+    const toolName = "model_router_echo";
+    const toolInput = "MODEL_ASSISTANT_TOOL_INPUT";
+    const toolOutput = "MODEL_ASSISTANT_TOOL_OK";
+    const prompt = `Call the ${toolName} tool with input ${toolInput}. Do not answer directly.`;
+    const tool = { type: "custom", name: toolName, description: "Echo text supplied by the user", format: { type: "text" } };
+    const toolResult = await call({ input: prompt, tools: [tool], tool_choice: "required" });
+    const toolCall = toolResult.output?.find((item) => item.type === "custom_tool_call" && item.name === toolName && item.input?.trim() === toolInput && item.call_id);
+    if (!toolCall) throw new Error("文本验证通过，但模型未真正调用 Codex 工具；此模型暂不能用于 Codex 工作窗口");
+    const continuation = await call({ input: [
+      { role: "user", content: prompt },
+      { type: "custom_tool_call", name: toolName, call_id: toolCall.call_id, input: toolCall.input },
+      { type: "custom_tool_call_output", call_id: toolCall.call_id, output: toolOutput },
+      { role: "user", content: `Reply exactly ${toolOutput}` },
+    ], tools: [tool], tool_choice: "none" });
+    if (answer(continuation).trim() !== toolOutput) throw new Error("工具调用成功，但模型未正确读取工具结果；此模型暂不能用于 Codex 工作窗口");
     const current = await this.store.route(id);
-    const result = { testedAt: new Date().toISOString(), latencyMs: Date.now() - started, model: current.model, endpoint: current.endpoint, protocol: current.protocol, credentialVersion: await this.store.credentialVersion(current.credentialID), ok: true };
-    await atomicJSON(path.join(this.store.root, "checks", `${id}.json`), result);
-    return { ...result, detected, message: `${detected?.changed ? `接口格式已按实测自动改为 ${detected.protocol}；` : ""}真实推理通过 · ${result.latencyMs} ms（不代表所有 Codex 工具均兼容）` };
+    const proof = { testedAt: new Date().toISOString(), latencyMs: Date.now() - started, model: current.model, endpoint: current.endpoint, protocol: current.protocol, credentialVersion: await this.store.credentialVersion(current.credentialID), ok: true, codexTools: true };
+    await atomicJSON(path.join(this.store.root, "checks", `${id}.json`), proof);
+    return { ...proof, detected, message: `${detected?.changed ? `接口格式已按实测自动改为 ${detected.protocol}；` : ""}文本、Codex 工具调用及结果回传均通过 · ${proof.latencyMs} ms（其他工具仍需按实际任务验证）` };
   }
   async prepare(id, { continueExisting = false } = {}) {
     let route = await this.store.route(id);
