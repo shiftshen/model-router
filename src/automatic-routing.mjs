@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { autoRouterSlug, buildRouterTable } from "./router.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
+import { estimateTokens } from "./context-compaction.mjs";
 import { CHECK_MAX_AGE_MS, VALIDATION_MAX_AGE_MS } from "./task-qualification.mjs";
 
 export const automaticModelSlug = autoRouterSlug;
@@ -41,9 +42,14 @@ export function profileFromPayload(payload) {
     : /tool|工具|权限|安全|删除|执行命令/i.test(text) ? "tool_use"
     : "general";
   const inputBytes = Number(payload?.__bytes) || Buffer.byteLength(JSON.stringify(payload?.input ?? ""));
+  const outputRequirement = Number.isSafeInteger(payload?.max_output_tokens) && payload.max_output_tokens > 0 ? payload.max_output_tokens : 0;
+  // Codex sends large tool schemas with every request. Their serialized JSON
+  // size is not the conversation history. Use the same content-aware estimate
+  // as gateway compaction or ordinary turns become false "long context" tasks.
+  const contextRequirement = Math.max(0, estimateTokens(payload, inputBytes) - outputRequirement);
   const requiredCategories = category === "general" ? [] : [category];
   if (hasTools && !requiredCategories.includes("tool_use")) requiredCategories.push("tool_use");
-  if (inputBytes > 400_000 && !requiredCategories.includes("long_context")) requiredCategories.push("long_context");
+  if (contextRequirement > 32000 && !requiredCategories.includes("long_context")) requiredCategories.push("long_context");
   const hasImage = Array.isArray(payload?.input) && payload.input.some((entry) =>
     Array.isArray(entry?.content) && entry.content.some((part) => part?.type === "input_image"));
   return {
@@ -51,12 +57,12 @@ export function profileFromPayload(payload) {
     requiredCategories,
     profile: {
       taskType: "code",
-      difficulty: inputBytes > 100_000 || /架构|重构|复杂|发布|上线|refactor|release|architecture|design the system|plan the architecture/i.test(text) ? "hard" : (simple ? "easy" : "medium"),
+      difficulty: contextRequirement > 20000 || /架构|重构|复杂|发布|上线|refactor|release|architecture|design the system|plan the architecture/i.test(text) ? "hard" : (simple ? "simple" : "medium"),
       requiredCapabilities: ["coding", ...requiredCategories.filter((item) => item !== "long_context")],
       modalities: hasImage ? ["text", "image"] : ["text"],
       languages: ["zh", "en"],
-      contextRequirement: Math.ceil(inputBytes / 3),
-      outputRequirement: Number.isSafeInteger(payload?.max_output_tokens) && payload.max_output_tokens > 0 ? payload.max_output_tokens : 0,
+      contextRequirement,
+      outputRequirement,
       allowExperimental: false,
       allowDegradedFallback: false,
     },
@@ -100,12 +106,20 @@ export async function qualifiedAutomaticCandidates(store, requiredCategories, pr
     // Short capability probes are not proof of an advertised 128K/1M context.
     // Large turns must fail closed until a real long-input validation exists.
     if (requiredCategories.includes("long_context") || (Number(profile.contextRequirement) || 0) > 32000) continue;
-    if (route.model === "qwen3-vl:latest" && (profile.difficulty !== "easy" || requiredCategories.includes("tool_use"))) continue;
+    if (route.model === "qwen3-vl:latest" && (profile.difficulty !== "simple" || requiredCategories.includes("tool_use"))) continue;
     const failures = routeLog.filter((item) => item.route === route.id && item.status === "failed"
       && /insufficient_quota|quota.{0,25}(?:exhausted|depleted|insufficient)|额度.{0,8}(?:不足|耗尽|用尽)/i.test(String(item.error ?? "")));
     const lastFailure = failures.at(-1);
     if (lastFailure && !routeLog.some((item) => item.route === route.id && item.status === "completed"
       && Date.parse(item.completedAt ?? item.at) > Date.parse(lastFailure.completedAt ?? lastFailure.at))) continue;
+    // Temporary provider outages/rate limits cool down for two minutes. A later
+    // successful call immediately restores the route; a bad prompt (HTTP 400)
+    // is task-specific and must not blacklist the provider.
+    const transient = routeLog.filter((item) => item.route === route.id && item.status === "failed"
+      && /HTTP 5\d\d|额度不足或请求过于频繁|限流|rate.?limit|too many requests|ECONN|ENOTFOUND|服务暂不可用/i.test(String(item.error ?? ""))).at(-1);
+    if (transient && Date.now() - Date.parse(transient.completedAt ?? transient.at) < 120_000
+      && !routeLog.some((item) => item.route === route.id && item.status === "completed"
+        && Date.parse(item.completedAt ?? item.at) > Date.parse(transient.completedAt ?? transient.at))) continue;
     if (requiredCategories.includes("tool_use")) {
       const incompatible = routeLog.filter((item) => item.route === route.id && item.status === "failed"
         && /custom tools require|additional_tools requires|unsupported tool|工具.{0,12}不支持/i.test(String(item.error ?? ""))).at(-1);
@@ -114,6 +128,9 @@ export async function qualifiedAutomaticCandidates(store, requiredCategories, pr
     }
     if (resolveContextWindow(route) < (Number(profile.contextRequirement) || 0) + (Number(profile.outputRequirement) || 0)) continue;
     const local = route.noKey && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(new URL(route.endpoint).hostname);
+    // Six short probes do not prove that a small local model can own a complex
+    // coding turn. Keep local execution as a qualified simple-task fallback.
+    if (local && profile.difficulty !== "simple") continue;
     if (local) {
       try {
         const available = await fetch(`${route.endpoint}/models`, { signal: AbortSignal.timeout(3000) });
@@ -206,6 +223,14 @@ export async function resolveAutomaticRoute(store, payload, { recommendAutomatic
   // while an independently billed API route is qualified for this turn.
   const remote = qualified.filter(({ candidate }) => candidate.privacy !== "local");
   const primaryCandidates = remote.length ? remote : qualified;
+  if (primaryCandidates.length === 1 && !recommendAutomatic) {
+    const [only] = primaryCandidates;
+    const fallbackRoutes = qualified.filter((entry) => entry !== only)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 2).map((entry) => entry.route);
+    return { route: only.route, slug: only.candidate.id, category,
+      provenance: { primary: "qualification", selectedBy: "single_qualified", fallbackReason: "" }, fallbackRoutes };
+  }
   const recommend = recommendAutomatic ?? ((input) => recommendWithEngineCLI(enginePath || process.env.MODEL_ROUTER_ENGINE_PATH, input, store.root));
   let decision;
   try { decision = await recommend({ profile, candidates: primaryCandidates.map(({ candidate }) => candidate) }); }
@@ -214,6 +239,9 @@ export async function resolveAutomaticRoute(store, payload, { recommendAutomatic
     throw automaticError("auto_engine_unavailable", "自动选模引擎无法使用");
   }
   const roleSelections = Array.isArray(decision?.roles) ? decision.roles.map((role) => role?.decision?.selected) : [];
+  if (decision?.status === "profile_unavailable") {
+    throw automaticError("auto_decision_unavailable", `自动选模决策暂不可用（${String(decision.reason || "unknown").slice(0, 64)}）；本轮未调用执行模型`);
+  }
   const selected = decision?.selected ?? (roleSelections.length > 0 && roleSelections.every((item) => item?.id === roleSelections[0]?.id
     && item?.modelId === roleSelections[0]?.modelId && item?.provider === roleSelections[0]?.provider)
     ? roleSelections[0] : null);

@@ -14,7 +14,7 @@ async function listen(server, t) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-async function fixture(t, { qualify = true, recommendAutomatic, failModel = "" } = {}) {
+async function fixture(t, { qualify = true, recommendAutomatic, failModel = "", failStatus = 429 } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "gateway-auto-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   let hits = 0;
@@ -26,8 +26,8 @@ async function fixture(t, { qualify = true, recommendAutomatic, failModel = "" }
       const model = JSON.parse(Buffer.concat(chunks).toString("utf8")).model;
       response.setHeader("content-type", "application/json");
       if (model === failModel) {
-        response.statusCode = 429;
-        response.end(JSON.stringify({ error: { message: "insufficient_quota" } }));
+        response.statusCode = failStatus;
+        response.end(JSON.stringify({ error: { message: failStatus === 429 ? "insufficient_quota" : "temporary outage" } }));
       } else response.end(JSON.stringify({ model, choices: [{ message: { content: "ROUTED" } }], usage: {} }));
     });
   }), t);
@@ -80,7 +80,7 @@ test("auto resolves qualified model and records requested and actual route", asy
 test("auto retries a different qualified model after primary quota failure", async (t) => {
   const app = await fixture(t, { failModel: "real-model", recommendAutomatic: async ({ candidates }) => ({
     mode: "advisory", status: "resolved",
-    selected: { id: candidates.find((item) => item.provider === "real").id, modelId: "real-model", provider: "real" }, roles: [],
+    selected: (() => { const item = candidates.find((candidate) => candidate.provider === "real") ?? candidates[0]; return { id: item.id, modelId: item.modelId, provider: item.provider }; })(), roles: [],
   }) });
   await app.store.save({ id: "backup", name: "合格备用", endpoint: app.upstream, protocol: "chat", model: "backup-model", credentialID: "backup", contextWindow: 128000 }, (await app.store.read()).revision, "backup-key");
   const backup = await app.store.route("backup");
@@ -95,6 +95,29 @@ test("auto retries a different qualified model after primary quota failure", asy
   assert.equal(log[1].route, backup.id);
   assert.equal(log[1].fallback, true);
   assert.match(log[1].decision.fallbackReason, /insufficient_quota/);
+  const second = await app.send(automaticModelSlug);
+  assert.equal(second.status, 200, JSON.stringify(second.body));
+  assert.equal(app.hits(), 3, "next turn should skip the exhausted primary instead of charging another failed attempt");
+  const nextLog = JSON.parse(await fs.readFile(path.join(app.root, "route-log.json"), "utf8"));
+  assert.equal(nextLog[2].route, backup.id);
+  assert.equal(nextLog[2].fallback, false);
+});
+
+test("temporary HTTP 503 also fails over and cools down on the next turn", async (t) => {
+  const app = await fixture(t, { failModel: "real-model", failStatus: 503, recommendAutomatic: async ({ candidates }) => {
+    const item = candidates.find((candidate) => candidate.provider === "real") ?? candidates[0];
+    return { mode: "advisory", status: "resolved", selected: { id: item.id, modelId: item.modelId, provider: item.provider }, roles: [] };
+  } });
+  await app.store.save({ id: "backup", name: "备用", endpoint: app.upstream, protocol: "chat", model: "backup-model", credentialID: "backup", contextWindow: 128000 }, (await app.store.read()).revision, "backup-key");
+  const backup = await app.store.route("backup");
+  await fs.writeFile(path.join(app.root, "checks", "backup.json"), JSON.stringify({ ok: true, testedAt: new Date().toISOString(), endpoint: backup.endpoint, model: backup.model, protocol: backup.protocol, credentialVersion: await app.store.credentialVersion(backup.credentialID) }));
+  await fs.writeFile(path.join(app.root, "validation", "backup.json"), JSON.stringify({ mode: "live", score: 90, testedAt: new Date().toISOString(), routeId: backup.id, model: backup.model, endpoint: backup.endpoint, protocol: backup.protocol, credentialVersion: await app.store.credentialVersion(backup.credentialID), byCategory: { planning: 100, backend: 100 } }));
+  assert.equal((await app.send(automaticModelSlug)).status, 200);
+  assert.equal((await app.send(automaticModelSlug)).status, 200);
+  assert.equal(app.hits(), 3);
+  const log = JSON.parse(await fs.readFile(path.join(app.root, "route-log.json"), "utf8"));
+  assert.equal(log[2].route, backup.id);
+  assert.equal(log[2].fallback, false);
 });
 
 test("unqualified model and missing engine reject auto without upstream call", async (t) => {
