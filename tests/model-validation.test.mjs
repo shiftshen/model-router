@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseValidationJSON, scoreValidation, summarizeValidation, validationTasks, validationPrompt } from "../src/model-validation.mjs";
+import { parseValidationJSON, scoreValidation, scoreWithOutputBudgetRetry, summarizeValidation, validationTasks, validationPrompt } from "../src/model-validation.mjs";
 
 test("能力验证任务集覆盖规划、前端、后端、调试、工具和长上下文", () => {
   assert.deepEqual(validationTasks.map((task) => task.category), ["planning", "frontend", "backend", "debugging", "tool_use", "long_context"]);
@@ -24,6 +24,30 @@ test("按能力任务评分并报告失败原因", () => {
   const failed = scoreValidation(task, { task_type: "backend" });
   assert.equal(failed.score, 0);
   assert.ok(failed.reasons.length > 0);
+});
+
+test("思考模型短预算没有完整 JSON 时只追加一次较长预算验证", async () => {
+  const task = validationTasks.find((item) => item.id === "planning");
+  const budgets = [];
+  const result = await scoreWithOutputBudgetRetry(task, async (budget) => {
+    budgets.push(budget);
+    return budget === 700 ? "{\"task_type\":\"planning\"" : JSON.stringify({ task_type: "planning", steps: [1, 2, 3], risks: [1, 2] });
+  });
+  assert.deepEqual(budgets, [700, 2048]);
+  assert.equal(result.score, 100);
+  assert.equal(result.outputBudgetRetry, true);
+});
+
+test("完整但不合格的 JSON 不能靠增加预算反复刷分", async () => {
+  const task = validationTasks.find((item) => item.id === "planning");
+  const budgets = [];
+  const result = await scoreWithOutputBudgetRetry(task, async (budget) => {
+    budgets.push(budget);
+    return JSON.stringify({ task_type: "other", steps: [], risks: [] });
+  });
+  assert.deepEqual(budgets, [700]);
+  assert.equal(result.score, 0);
+  assert.equal(result.outputBudgetRetry, false);
 });
 
 test("工具安全任务要求删除和外部调用都确认", () => {

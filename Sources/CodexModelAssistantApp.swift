@@ -6,6 +6,7 @@ struct ModelLibraryView: View {
     // 标题栏的版本号从 bundle 读，别写死——写死过一次就变成「装的明明是新版，界面还显示旧版」。
     private var bundleVersion: String { (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "?" }
     private let updateTimer = Timer.publish(every: 6 * 3600, on: .main, in: .common).autoconnect()
+    private let activityTimer = Timer.publish(every: 10, on: .main, in: .common).autoconnect()
     private let routeTimer = Timer.publish(every: 4, on: .main, in: .common).autoconnect()
 
     @StateObject private var library = LibraryViewModel()
@@ -79,6 +80,9 @@ struct ModelLibraryView: View {
         }
         .onReceive(updateTimer) { _ in
             Task { await library.checkForUpdates(currentVersion: bundleVersion, silent: true) }
+        }
+        .onReceive(activityTimer) { _ in
+            if !NSApp.isActive { Task { await library.refreshActivity() } }
         }
         .onReceive(routeTimer) { _ in
             if NSApp.isActive { Task { await library.refreshRoutes() } }
@@ -558,10 +562,14 @@ struct ModelLibraryView: View {
                         .foregroundStyle(route.confirmed == true ? .green : (route.status == "failed" ? .red : .orange))
                         .font(.caption)
                     Text(route.confirmed == true
-                         ? "已确认：\(route.name ?? route.route) · 实际 ID \(route.observedModel ?? route.requestedModel ?? route.model ?? "?") → \(route.host)\(route.windowID?.isEmpty == false ? " · 窗口 \(route.windowID!)" : "")"
-                         : "\(route.status == "failed" ? "失败" : "未确认")：\(route.name ?? route.route) · \(route.requestedModel ?? route.model ?? "?")")
+                         ? "所有窗口最新 · 已确认：\(route.name ?? route.route) · 实际 ID \(route.observedModel ?? route.requestedModel ?? route.model ?? "?") → \(route.host)\(route.windowID?.isEmpty == false ? " · 窗口 \(route.windowID!)" : "")"
+                         : "所有窗口最新 · \(route.status == "failed" ? "失败" : "请求中 · 尚未收到响应")：\(route.name ?? route.route) · \(route.model ?? "?") → \(route.host)")
                         .font(.caption).foregroundStyle(route.confirmed == true ? .green : (route.status == "failed" ? .red : .orange)).lineLimit(1)
-                        .help("只有“已确认”表示对应上游成功完成请求；模型自己的文字自述不作为切换证据。")
+                        .help("显示所有窗口的最新网关请求，不一定是当前会话。请求中只表示已选路线；只有“已确认”表示对应上游成功完成请求，实际 ID 来自上游回执。")
+                    Text(route.host == "openrouter.ai" && (route.model ?? "").hasSuffix(":free") ? "免费 SKU · 有限流" : "费用/额度以供应商为准")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(route.host == "openrouter.ai" && (route.model ?? "").hasSuffix(":free") ? .green : .orange)
+                        .lineLimit(1)
                 }
                 Spacer()
                 if library.busy { ProgressView().controlSize(.small) }
@@ -989,12 +997,26 @@ struct ModelLibraryView: View {
     private var discovery: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("选择供应商模型").font(.title2.bold())
-            Text("共 \(library.discovered.count) 个候选（含当前模型）。可在编辑配置中手动输入模型 ID；目录不代表套餐支持，实际可用性以真实验证为准。").font(.callout).foregroundStyle(.secondary)
+            Text("共 \(library.discovered.count) 个候选（含当前模型）。点击加号会新增独立条目并沿用当前供应商密钥，不会覆盖原模型；目录不代表套餐支持，请再做真实验证。").font(.callout).foregroundStyle(.secondary)
             TextField("筛选模型 ID", text: $library.discoveryFilter).textFieldStyle(.roundedBorder)
             List(library.discovered.filter { library.discoveryFilter.isEmpty || $0.localizedCaseInsensitiveContains(library.discoveryFilter) }, id: \.self) { id in
                 Button {
                     guard var model = library.selected else { return }
+                    if let existing = library.models.first(where: { !$0.archived && $0.endpoint == model.endpoint && $0.model == id }) {
+                        library.select(existing.id)
+                        library.showDiscovery = false
+                        return
+                    }
+                    model.id = ManagedModel.new().id
+                    model.name = id
                     model.model = id
+                    model.archived = false
+                    model.hidden = false
+                    model.fallback = nil
+                    model.contextWindowAuto = true
+                    model.contextWindow = 0
+                    model.verifiedAt = nil
+                    model.hasKey = nil
                     Task { if await library.save(model) { library.showDiscovery = false } }
                 } label: { HStack { Text(id); Spacer(); Image(systemName: "plus.circle") } }
                 .buttonStyle(.plain).disabled(library.busy)

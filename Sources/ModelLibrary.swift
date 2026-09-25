@@ -382,6 +382,7 @@ final class LibraryViewModel: ObservableObject {
     @Published var updateInfo: UpdateInfo?
     @Published var showUpdateAlert = false
     private var revision = 0
+    private var refreshingActivity = false
     var selected: ManagedModel? { models.first { $0.id == selectedID } }
     var visible: [ManagedModel] {
         // 排序优先级只用来把常用条目排在前面：官方、DeepSeek 官方接口，然后是专家策略指定的本地入口。
@@ -656,6 +657,17 @@ final class LibraryViewModel: ObservableObject {
         if selected?.archived == true && !showArchived { selectedID = "official" }
         if response.ok { message = gateway.ok ? "模型库已就绪。选择模型，配置密钥并验证后启动。" : (gateway.message ?? "模型网关未启动"); success = gateway.ok ? nil : false }
         busy = false
+    }
+
+    // Keep request status fresh while the user works in Codex. The existing
+    // route-status command reads only the request ledger.
+    func refreshActivity() async {
+        guard !refreshingActivity else { return }
+        refreshingActivity = true
+        defer { refreshingActivity = false }
+        let response = await call(["route-status"], timeout: 10)
+        guard response.ok else { return }
+        if let routes = response.recentRoutes { recentRoutes = routes }
     }
 
     func select(_ id: String) {

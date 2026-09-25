@@ -97,6 +97,16 @@ export function scoreValidation(task, output) {
   return { taskId: task.id, category: task.category, passed, total, score: total ? Math.round((passed / total) * 100) : 0, validJSON: Boolean(value), reasons, output: value };
 }
 
+export async function scoreWithOutputBudgetRetry(task, request) {
+  let result = scoreValidation(task, await request(700));
+  // A reasoning model may exhaust 700 output tokens before completing JSON.
+  // A valid but incorrect answer is a genuine capability failure, not a
+  // reason to keep retrying until it passes.
+  if (result.validJSON) return { ...result, outputBudgetRetry: false };
+  result = scoreValidation(task, await request(2048));
+  return { ...result, outputBudgetRetry: true };
+}
+
 export function summarizeValidation(route, results, { mode = "dry-run" } = {}) {
   const total = results.reduce((sum, item) => sum + item.total, 0);
   const passed = results.reduce((sum, item) => sum + item.passed, 0);
