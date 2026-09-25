@@ -11,7 +11,7 @@ import { Readable } from "node:stream";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import dns from "node:dns/promises";
-import { ModelStore } from "./model-store.mjs";
+import { ModelStore, atomicJSON } from "./model-store.mjs";
 import { LocalQueue } from "./local-queue.mjs";
 import { buildRouterTable, stableRouterTable, routerID, routerTableEntry } from "./router.mjs";
 import { readWindowRegistry, windowPaths } from "./window-registry.mjs";
@@ -470,6 +470,43 @@ export async function upstream(route, key, suffix, body, timeout = 3600000, sign
   return response;
 }
 
+async function refreshAutomaticCheck(store, route, signal) {
+  const marker = "MODEL_ASSISTANT_OK";
+  const prompt = `Reply exactly ${marker}`;
+  const request = route.protocol === "chat"
+    ? { suffix: "chat/completions", body: { model: route.model, messages: [{ role: "user", content: prompt }], max_tokens: 64, stream: false } }
+    : route.protocol === "anthropic"
+      ? { suffix: "messages", body: { model: route.model, max_tokens: 64, messages: [{ role: "user", content: prompt }] } }
+      : { suffix: "responses", body: { model: route.model, input: prompt, max_output_tokens: 64, store: false } };
+  const credentialVersion = await store.credentialVersion(route.credentialID);
+  const result = await upstream(route, await store.secret(route.credentialID), request.suffix, request.body, 20_000, signal);
+  const body = await limitedJSON(result.body, 1024 * 1024);
+  const output = route.protocol === "chat" ? body.choices?.[0]?.message?.content
+    : route.protocol === "anthropic" ? body.content?.filter((part) => part.type === "text").map((part) => part.text || "").join("")
+      : body.output?.filter((item) => item.type === "message").flatMap((item) => item.content || []).map((part) => part.text || "").join("");
+  if (String(output ?? "").trim() !== marker) throw new Error("自动连接复检未返回验证词");
+  const current = await store.route(route.id);
+  if (current.archived || current.model !== route.model || current.endpoint !== route.endpoint
+    || current.protocol !== route.protocol || await store.credentialVersion(route.credentialID) !== credentialVersion) {
+    throw new Error("自动连接复检期间模型配置已改变");
+  }
+  await atomicJSON(path.join(store.root, "checks", `${route.id}.json`), {
+    ok: true, testedAt: new Date().toISOString(), model: route.model, endpoint: route.endpoint,
+    protocol: route.protocol, credentialVersion,
+  });
+}
+
+async function invalidateUnavailableAutomaticCheck(store, route, error) {
+  if (!/No endpoints found for\b|not supported by any configured account in this group/i.test(String(error?.detail || error?.message || ""))) return;
+  const current = await store.route(route.id);
+  if (current.model !== route.model || current.endpoint !== route.endpoint || current.protocol !== route.protocol) return;
+  await atomicJSON(path.join(store.root, "checks", `${route.id}.json`), {
+    ok: false, testedAt: new Date().toISOString(), model: route.model, endpoint: route.endpoint,
+    protocol: route.protocol, credentialVersion: await store.credentialVersion(route.credentialID),
+    reason: "provider_has_no_endpoint",
+  });
+}
+
 export function upstreamFailure(status, detail) {
   const messages = { 401: "API Key 无效或已过期", 403: "该密钥无访问权限", 404: "接口或模型不存在，请核对地址和模型 ID", 429: "额度不足或请求过于频繁" };
   const error = new Error(messages[status] || `供应商服务异常（HTTP ${status}）`);
@@ -705,7 +742,10 @@ export function createGateway(store = new ModelStore(), options = {}) {
       let automaticDecision = null;
       if (switched) {
         if (payload.model === automaticModelSlug) {
-          automaticDecision = await resolveAutomaticRoute(store, payload, options);
+          automaticDecision = await resolveAutomaticRoute(store, payload, {
+            ...options,
+            refreshAutomaticCheck: (candidate) => refreshAutomaticCheck(store, candidate, abort.signal),
+          });
           route = automaticDecision.route;
         } else {
           const table = buildRouterTable((await store.read()).routes);
@@ -866,6 +906,40 @@ export function createGateway(store = new ModelStore(), options = {}) {
                 served = true;
                 break;
               }
+              if (automaticDecision) {
+                // Automatic turns must not expose a partial answer from a
+                // provider that fails mid-stream: once visible, another model
+                // cannot safely continue the same response. Buffer only this
+                // mode, then publish after a completed upstream response.
+                const contentType = result.headers.get("content-type") || "";
+                let wire;
+                if (contentType.includes("text/event-stream")) {
+                  wire = await limitedText(result.body, 8 * 1024 * 1024);
+                  const failed = /event:\s*(?:response\.failed|error)\b|"type"\s*:\s*"(?:response\.failed|error)"/i.test(wire);
+                  const completed = /event:\s*response\.completed\b|"type"\s*:\s*"response\.completed"|data:\s*\[DONE\]/i.test(wire);
+                  if (failed || !completed) throw new Error(failed ? "供应商流式响应失败，正在切换备用模型" : "供应商流式响应未完成，正在切换备用模型");
+                  if (payload.tool_choice === "required" && !/"type"\s*:\s*"(?:function_call|custom_tool_call)"/i.test(wire)) {
+                    throw new Error("供应商没有按要求调用工具，正在切换备用模型");
+                  }
+                } else {
+                  const body = await limitedJSON(result.body, 8 * 1024 * 1024);
+                  const useful = body.output?.some((item) => item.type === "function_call" || item.type === "custom_tool_call"
+                    || (item.type === "message" && item.content?.some((part) => String(part.text ?? "").trim())));
+                  if (body.status === "failed" || !useful) throw new Error(body.error?.message || "供应商没有返回可用结果，正在切换备用模型");
+                  requireToolCall(body.output, payload.tool_choice === "required");
+                  wire = responseEvents(body);
+                }
+                if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
+                observedModel = modelFromWire(wire);
+                await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
+                if (!response.headersSent) response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
+                sseStream = true;
+                eventsSent = true;
+                response.end(wire);
+                disarmIdle();
+                served = true;
+                break;
+              }
               if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
               // 这里必须直接转发，不能因为「已经发过响应头」就把整段缓冲下来：
               // 提前发出去的只是「正在压缩」的注释，正文仍然要一个 token 一个 token 地流。
@@ -912,7 +986,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
                 // A required tool call may be silently turned into plain text by a free router.
                 // Keep the SSE body private until a real call is confirmed, so a backup route
                 // can still take over without stitching two models into one Codex response.
-                const holdForTool = payload.tool_choice === "required";
+                const holdForTool = payload.tool_choice === "required" || Boolean(automaticDecision);
                 const pending = [];
                 let pendingBytes = 0;
                 const stream = createResponseStream({ model: target.model, send: (chunk) => {
@@ -940,8 +1014,9 @@ export function createGateway(store = new ModelStore(), options = {}) {
                 }
                 observedModel = capture.model();
                 disarmIdle();
+                if (automaticDecision && !capture.completed()) throw new Error("供应商流式响应未完成，正在切换备用模型");
                 const converted = stream.finish({ definitions });
-                requireToolCall(converted.output, holdForTool);
+                requireToolCall(converted.output, payload.tool_choice === "required");
                 if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
                 if (holdForTool) { for (const chunk of pending) response.write(chunk); eventsSent = true; }
                 await confirmRoute(store.root, routeAudit.requestId, { observedModel, protocol: attempt });
@@ -970,7 +1045,12 @@ export function createGateway(store = new ModelStore(), options = {}) {
               await failRoute(store.root, routeAudit.requestId, { protocol: attempt, error: errorMessage(error) });
               throw error;
             }
-            const wrongEndpoint = [404, 405].includes(error.status) || error.code === "invalid_upstream_response";
+            // "No endpoints" means this model has no routable provider, not
+            // that Chat/Responses was chosen incorrectly. Move to the next
+            // model immediately instead of trying three formats of the same
+            // unavailable model.
+            const unavailableModel = /No endpoints found for\b|not supported by any configured account in this group/i.test(String(error.detail || error.message || ""));
+            const wrongEndpoint = !unavailableModel && ([404, 405].includes(error.status) || error.code === "invalid_upstream_response");
             if (wrongEndpoint && index < attempts.length - 1) {
               clearInterval(heartbeat);
               heartbeat = undefined;
@@ -1005,6 +1085,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
           break;
         }
         await failRoute(store.root, routeAudit.requestId, { error: errorMessage(lastError ?? new Error("上游没有成功响应")) });
+        if (automaticDecision && lastError) await invalidateUnavailableAutomaticCheck(store, target, lastError).catch(() => {});
         candidateIndex += 1;
       }
       if (!served) throw lastError || new Error("模型调用失败");

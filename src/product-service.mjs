@@ -1295,6 +1295,21 @@ export class ProductService {
       message: stillRunning ? `已发送关闭请求，但 PID ${pid} 仍在运行，请手动关闭该窗口` : "窗口已关闭；对话和任务库都留在磁盘上，随时可以再打开",
     };
   }
+  async refreshWindowModels(id) {
+    // Codex Desktop caches the model picker in memory. Reopening the same
+    // managed profile preserves its conversation store and browser login.
+    // Never interrupt a live gateway request just to refresh the picker.
+    const health = await this.gatewayHealth();
+    if (Number(health.inflight) > 0) throw new Error(`仍有 ${health.inflight} 个模型请求进行中；请等任务结束后再刷新窗口模型`);
+    const running = await this.runningWindows();
+    if (running.has(id)) {
+      const closed = await this.closeWindow(id);
+      if (!closed.delivered) throw new Error(closed.message || "工作窗口尚未关闭，未执行刷新");
+    }
+    await this.refreshCatalogs();
+    const opened = await this.openWindow(id);
+    return { ...opened, message: `模型列表已刷新；「${opened.window?.name ?? id}」已用原有会话和登录资料重新打开。` };
+  }
   // 关窗后还会剩下 reparent 到 init 的 crashpad 助手进程（命令行里的 --database 指向本窗口的 browser-data/Crashpad）。
   // 它们不占界面，但每开关一次就留下两个，多开重度使用会越积越多；标记精确到本窗口目录，不会误伤其它窗口。
   async sweepWindowHelpers(id) {

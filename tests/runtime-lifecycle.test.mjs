@@ -8,6 +8,22 @@ import { ProductService } from "../src/product-service.mjs";
 import { autoRouterSlug } from "../src/router.mjs";
 import { writeWindowRegistry } from "../src/window-registry.mjs";
 
+test("refreshing a running model picker preserves its window identity and refuses in-flight tasks", async () => {
+  const service = new ProductService(new ModelStore(path.join(os.tmpdir(), "unused-refresh-test")));
+  const steps = [];
+  service.gatewayHealth = async () => ({ inflight: 1 });
+  service.runningWindows = async () => new Map([["work", 123]]);
+  service.closeWindow = async () => { steps.push("close"); return { delivered: true }; };
+  service.refreshCatalogs = async () => { steps.push("catalog"); };
+  service.openWindow = async (id) => { steps.push(`open:${id}`); return { window: { name: "work" }, pid: 456 }; };
+  await assert.rejects(service.refreshWindowModels("work"), /请求进行中/);
+  assert.deepEqual(steps, []);
+  service.gatewayHealth = async () => ({ inflight: 0 });
+  const result = await service.refreshWindowModels("work");
+  assert.deepEqual(steps, ["close", "catalog", "open:work"]);
+  assert.match(result.message, /原有会话和登录资料/);
+});
+
 test("profiles follow remembered models across windows and continuations; running windows defer changes", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "router-lifecycle-"));
   t.after(() => fs.rm(root, {recursive:true, force:true}));

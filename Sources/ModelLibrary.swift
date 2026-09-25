@@ -382,6 +382,7 @@ final class LibraryViewModel: ObservableObject {
     @Published var updateInfo: UpdateInfo?
     @Published var showUpdateAlert = false
     private var revision = 0
+    private var refreshingActivity = false
     var selected: ManagedModel? { models.first { $0.id == selectedID } }
     var visible: [ManagedModel] {
         // 排序优先级只用来把常用条目排在前面：官方、DeepSeek 官方接口，然后是专家策略指定的本地入口。
@@ -658,6 +659,17 @@ final class LibraryViewModel: ObservableObject {
         busy = false
     }
 
+    // Keep request status fresh while the user works in Codex. The existing
+    // route-status command reads only the request ledger.
+    func refreshActivity() async {
+        guard !refreshingActivity else { return }
+        refreshingActivity = true
+        defer { refreshingActivity = false }
+        let response = await call(["route-status"], timeout: 10)
+        guard response.ok else { return }
+        if let routes = response.recentRoutes { recentRoutes = routes }
+    }
+
     func select(_ id: String) {
         selectedID = id
         success = nil
@@ -745,6 +757,17 @@ final class LibraryViewModel: ObservableObject {
         accept(response)
         // 已经在跑的窗口不会有新 pid，但同样应该被提到最前。
         raiseWindowIfNeeded(response.pid ?? response.window?.pid ?? windows.first { $0.id == id }?.pid)
+        busy = false
+    }
+
+    func refreshWindowModels(_ id: String) async {
+        guard !busy else { return }
+        busy = true
+        success = nil
+        message = "正在刷新模型列表并重新打开原窗口；对话和登录资料会保留…"
+        let response = await call(["refresh-window-models", id], timeout: 120)
+        accept(response)
+        if response.ok { raiseWindowIfNeeded(response.pid ?? response.window?.pid) }
         busy = false
     }
 
@@ -897,8 +920,43 @@ final class LibraryViewModel: ObservableObject {
         busy = true
         do {
             let routeObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(model))
-            let data = try JSONSerialization.data(withJSONObject: ["route": routeObject, "revision": revision, "key": key, "clearKey": clearKey])
-            let response = await call(["save"], input: data)
+            // A discovery sheet can stay open while another window updates the library.
+            // Only a brand-new ID is safe to retry; never overwrite an edited existing route.
+            let isNew = !models.contains(where: { $0.id == model.id })
+            if isNew {
+                let latest = await call(["library"])
+                if !latest.ok { accept(latest); busy = false; return false }
+                accept(latest)
+                if let existing = models.first(where: { !$0.archived && $0.endpoint == model.endpoint && $0.model == model.model }) {
+                    selectedID = existing.id
+                    message = "该模型已添加，已选中现有条目"
+                    busy = false
+                    return true
+                }
+            }
+            var data = try JSONSerialization.data(withJSONObject: ["route": routeObject, "revision": revision, "key": key, "clearKey": clearKey])
+            var response = await call(["save"], input: data)
+            if isNew && response.ok == false && response.message == "配置已在另一窗口更新，请刷新后重试" {
+                let latest = await call(["library"])
+                if latest.ok {
+                    accept(latest)
+                    if let existing = models.first(where: { !$0.archived && $0.endpoint == model.endpoint && $0.model == model.model }) {
+                        selectedID = existing.id
+                        message = "该模型已由另一窗口添加，已选中现有条目"
+                        busy = false
+                        return true
+                    }
+                    if !models.contains(where: { $0.id == model.id }) {
+                        data = try JSONSerialization.data(withJSONObject: ["route": routeObject, "revision": revision, "key": key, "clearKey": clearKey])
+                        response = await call(["save"], input: data)
+                    } else {
+                        message = "模型已由另一窗口添加；请刷新后查看"
+                        success = false
+                        busy = false
+                        return false
+                    }
+                } else { response = latest }
+            }
             accept(response)
             busy = false
             if response.ok { selectedID = model.id }

@@ -11,7 +11,7 @@ import { resolveContextWindow } from "./model-windows.mjs";
 import { liveThreadRows } from "./thread-ledger.mjs";
 import { checkForUpdate, prepareUpdate } from "./update-service.mjs";
 import { readCallLog, readWatchState, summarizeCalls } from "./deepseek-watch.mjs";
-import { summarizeValidation, scoreValidation, validationPrompt, validationTasks } from "./model-validation.mjs";
+import { summarizeValidation, scoreWithOutputBudgetRetry, validationPrompt, validationTasks } from "./model-validation.mjs";
 import { gatewayURL } from "./model-gateway.mjs";
 import { runTask } from "./task-executor.mjs";
 
@@ -109,16 +109,19 @@ async function main() {
       for (const task of validationTasks) {
         const started = Date.now();
         try {
-          const response = await fetch(`${gatewayURL}/routes/${route.id}/v1/responses`, {
-            method: "POST",
-            headers: { "content-type": "application/json", authorization: `Bearer ${await store.token(route.id)}` },
-            body: JSON.stringify({ model: route.model, input: validationPrompt(task), max_output_tokens: 700, stream: false }),
-            signal: AbortSignal.timeout(120000),
-          });
-          const body = await limitedJSON(response.body, 4 * 1024 * 1024);
-          const text = body?.output?.filter((item) => item?.type === "message").flatMap((item) => item.content || []).map((part) => part.text || "").join("") || "";
-          if (!response.ok) throw new Error(body?.error?.message || `HTTP ${response.status}`);
-          results.push({ ...scoreValidation(task, text), latencyMs: Date.now() - started });
+          const request = async (maxOutputTokens) => {
+            const response = await fetch(`${gatewayURL}/routes/${route.id}/v1/responses`, {
+              method: "POST",
+              headers: { "content-type": "application/json", authorization: `Bearer ${await store.token(route.id)}` },
+              body: JSON.stringify({ model: route.model, input: validationPrompt(task), max_output_tokens: maxOutputTokens, stream: false }),
+              signal: AbortSignal.timeout(120000),
+            });
+            const body = await limitedJSON(response.body, 4 * 1024 * 1024);
+            if (!response.ok) throw new Error(body?.error?.message || `HTTP ${response.status}`);
+            return body?.output?.filter((item) => item?.type === "message").flatMap((item) => item.content || []).map((part) => part.text || "").join("") || "";
+          };
+          const scored = await scoreWithOutputBudgetRetry(task, request);
+          results.push({ ...scored, latencyMs: Date.now() - started });
         } catch (error) {
           results.push({ taskId: task.id, category: task.category, passed: 0, total: 1, score: 0, validJSON: false, reasons: [error.message], latencyMs: Date.now() - started });
         }
@@ -215,6 +218,7 @@ async function main() {
   if (command === "windows") return service.switchSummary();
   // 把模型目录参数（含 Codex 自己的压缩阈值）同步到所有窗口，不必关掉正在用的窗口。
   if (command === "refresh-catalogs") return service.refreshCatalogs();
+  if (command === "refresh-window-models") return service.refreshWindowModels(id);
   // 新窗口：每个窗口一份独立的 CODEX_HOME + 浏览器数据目录，可以同时开多个、各自换模型。
   if (command === "new-window") return service.createWindow(id || "");
   if (command === "open-window") return service.openWindow(id || legacyWindowID);

@@ -6,7 +6,7 @@ export const validationTasks = Object.freeze([
   {
     id: "planning",
     category: "planning",
-    prompt: "为一个已有 Node.js 项目设计‘模型能力自动验证’功能。只输出 JSON，不要写代码。字段必须包含 task_type、risks、steps、acceptance_tests；steps 至少 3 项，risks 至少 2 项。",
+    prompt: "为一个已有 Node.js 项目设计‘模型能力自动验证’功能。只输出 JSON，不要写代码。字段必须包含 task_type、risks、steps、acceptance_tests；task_type 必须是 planning，steps 至少 3 项，risks 至少 2 项。",
     checks: { task_type: "planning", minArray: ["steps", 3], minArray2: ["risks", 2] },
   },
   {
@@ -95,6 +95,16 @@ export function scoreValidation(task, output) {
   }
   if (!value) reasons.unshift("没有解析出有效 JSON");
   return { taskId: task.id, category: task.category, passed, total, score: total ? Math.round((passed / total) * 100) : 0, validJSON: Boolean(value), reasons, output: value };
+}
+
+export async function scoreWithOutputBudgetRetry(task, request) {
+  let result = scoreValidation(task, await request(700));
+  // A reasoning model may exhaust 700 output tokens before completing JSON.
+  // A valid but incorrect answer is a genuine capability failure, not a
+  // reason to keep retrying until it passes.
+  if (result.validJSON) return { ...result, outputBudgetRetry: false };
+  result = scoreValidation(task, await request(2048));
+  return { ...result, outputBudgetRetry: true };
 }
 
 export function summarizeValidation(route, results, { mode = "dry-run" } = {}) {

@@ -5,10 +5,14 @@ import { fileURLToPath } from "node:url";
 import { autoRouterSlug, buildRouterTable } from "./router.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
 import { estimateTokens } from "./context-compaction.mjs";
-import { CHECK_MAX_AGE_MS, VALIDATION_MAX_AGE_MS } from "./task-qualification.mjs";
+import { CHECK_MAX_AGE_MS } from "./task-qualification.mjs";
 
 export const automaticModelSlug = autoRouterSlug;
 const categories = ["planning", "frontend", "backend", "debugging", "tool_use", "long_context"];
+// Capability tests describe a model/configuration, while connection probes
+// describe current availability. Keep the former longer, but refresh the
+// latter on demand before an automatic turn when too few backups remain.
+const AUTO_VALIDATION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 function automaticError(code, message) {
   const error = new Error(message);
@@ -82,7 +86,32 @@ function persistentQuotaFailure(error) {
   return /insufficient_quota|quota.{0,25}(?:exhausted|depleted|insufficient)|(?:credits?|balance).{0,25}(?:exhausted|depleted|insufficient)|(?:余额|额度).{0,8}(?:不足|耗尽|用尽)/i.test(detail);
 }
 
-export async function qualifiedAutomaticCandidates(store, requiredCategories, profile = {}) {
+function unavailableModelFailure(error) {
+  const detail = String(error ?? "");
+  return /No endpoints found for\b|not supported by any configured account in this group/i.test(detail);
+}
+
+function knownNoApiCharge(route) {
+  const url = new URL(route.endpoint);
+  const local = route.noKey && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  return local || (url.hostname === "openrouter.ai" && (route.model.endsWith(":free") || route.model === "openrouter/free"));
+}
+
+async function approvedPaidRoutes(root) {
+  let config;
+  try { config = JSON.parse(await fs.readFile(path.join(root, "auto-routing-runtime.json"), "utf8")); }
+  catch (error) {
+    if (error.code === "ENOENT") return new Set();
+    throw automaticError("auto_cost_policy_invalid", "自动选模费用设置无效；已阻止付费调用");
+  }
+  const ids = config?.autoApprovedPaidRoutes ?? [];
+  if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(id))) {
+    throw automaticError("auto_cost_policy_invalid", "自动选模费用设置无效；已阻止付费调用");
+  }
+  return new Set(ids);
+}
+
+export async function qualifiedAutomaticCandidates(store, requiredCategories, profile = {}, { allowStaleCheck = false } = {}) {
   const routes = (await store.read()).routes;
   const table = buildRouterTable(routes);
   let routeLog = [];
@@ -99,12 +128,12 @@ export async function qualifiedAutomaticCandidates(store, requiredCategories, pr
       store.secret(route.credentialID),
       store.credentialVersion(route.credentialID),
     ]);
-    if (!check?.ok || !Number.isFinite(Date.parse(check.testedAt)) || Date.now() - Date.parse(check.testedAt) > CHECK_MAX_AGE_MS
+    if (!check?.ok || !Number.isFinite(Date.parse(check.testedAt)) || (!allowStaleCheck && Date.now() - Date.parse(check.testedAt) > CHECK_MAX_AGE_MS)
       || check.endpoint !== route.endpoint || check.model !== route.model
       || check.protocol !== route.protocol || check.credentialVersion !== credentialVersion
       || (!route.noKey && !secret)) continue;
     if (validation?.mode !== "live" || !Number.isFinite(Date.parse(validation.testedAt))
-      || Date.now() - Date.parse(validation.testedAt) > VALIDATION_MAX_AGE_MS
+      || Date.now() - Date.parse(validation.testedAt) > AUTO_VALIDATION_MAX_AGE_MS
       || validation.routeId !== route.id || validation.model !== route.model
       || validation.endpoint !== route.endpoint || validation.protocol !== route.protocol
       || validation.credentialVersion !== credentialVersion) continue;
@@ -120,6 +149,13 @@ export async function qualifiedAutomaticCandidates(store, requiredCategories, pr
     const lastFailure = failures.at(-1);
     if (lastFailure && !routeLog.some((item) => item.route === route.id && item.status === "completed"
       && Date.parse(item.completedAt ?? item.at) > Date.parse(lastFailure.completedAt ?? lastFailure.at))) continue;
+    // A model page or an old successful probe is not proof that the supplier
+    // still has a routable endpoint. Keep it out of auto until a later real
+    // call succeeds; manually selected models remain under user control.
+    const unavailable = routeLog.filter((item) => item.route === route.id && item.status === "failed"
+      && unavailableModelFailure(item.error)).at(-1);
+    if (unavailable && !routeLog.some((item) => item.route === route.id && item.status === "completed"
+      && Date.parse(item.completedAt ?? item.at) > Date.parse(unavailable.completedAt ?? unavailable.at))) continue;
     // Temporary provider outages/rate limits cool down for two minutes. A later
     // successful call immediately restores the route; a bad prompt (HTTP 400)
     // is task-specific and must not blacklist the provider.
@@ -153,7 +189,7 @@ export async function qualifiedAutomaticCandidates(store, requiredCategories, pr
         id: slug, modelId: route.model, provider: route.id,
         capabilities, modalities: ["text"], languages: ["zh", "en"],
         contextWindow: resolveContextWindow(route), maxOutput: 4096,
-        costTier: route.noKey ? 1 : 3, latencyTier: 3,
+        costTier: knownNoApiCharge(route) ? 1 : 3, latencyTier: 3,
         privacy: local ? "local" : "remote",
         status: "qualified", credentialStatus: "active",
       },
@@ -222,11 +258,27 @@ export async function recommendWithEngineCLI(enginePath, input, root) {
   });
 }
 
-export async function resolveAutomaticRoute(store, payload, { recommendAutomatic, enginePath } = {}) {
+export async function resolveAutomaticRoute(store, payload, { recommendAutomatic, enginePath, refreshAutomaticCheck } = {}) {
   const { category, requiredCategories, profile } = profileFromPayload(payload);
   if (profile.modalities.includes("image")) throw automaticError("auto_no_qualified_model", "当前模型能力验证未覆盖图片任务");
-  const qualified = await qualifiedAutomaticCandidates(store, requiredCategories, profile);
-  if (!qualified.length) throw automaticError("auto_no_qualified_model", "没有通过当前任务所需能力验证的模型，请先在应用中运行连接和能力验证");
+  const approvedPaid = await approvedPaidRoutes(store.root);
+  const withinBudget = (entry) => knownNoApiCharge(entry.route) || approvedPaid.has(entry.route.id);
+  let availableQualified = await qualifiedAutomaticCandidates(store, requiredCategories, profile);
+  let qualified = availableQualified.filter(withinBudget);
+  if (qualified.length < 2 && refreshAutomaticCheck) {
+    const stale = (await qualifiedAutomaticCandidates(store, requiredCategories, profile, { allowStaleCheck: true })).filter(withinBudget);
+    const refresh = stale.filter((entry) => !qualified.some((current) => current.route.id === entry.route.id))
+      .sort((left, right) => right.score - left.score).slice(0, 2);
+    for (const entry of refresh) {
+      try { await refreshAutomaticCheck(entry.route); } catch { /* fail closed and try the next known candidate */ }
+    }
+    if (refresh.length) {
+      availableQualified = await qualifiedAutomaticCandidates(store, requiredCategories, profile);
+      qualified = availableQualified.filter(withinBudget);
+    }
+  }
+  if (!availableQualified.length) throw automaticError("auto_no_qualified_model", "没有通过当前任务所需能力验证的模型，请先在应用中运行连接和能力验证");
+  if (!qualified.length) throw automaticError("auto_no_budget_model", "本轮没有通过验证且可用的免费模型；自动模式已阻止未明确批准的付费路线，未调用收费模型。可手动选择具体模型。");
   // Local models are the emergency/low-cost fallback, not the primary route
   // while an independently billed API route is qualified for this turn.
   const remote = qualified.filter(({ candidate }) => candidate.privacy !== "local");
