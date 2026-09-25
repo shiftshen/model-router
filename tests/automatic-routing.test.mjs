@@ -73,6 +73,24 @@ test("one verified primary needs no external decision service", async (t) => {
   assert.equal(result.provenance.selectedBy, "single_qualified");
 });
 
+test("auto refreshes a stale connection check before declaring a validated model unavailable", async (t) => {
+  const { store, route, root } = await fixture(t);
+  const file = path.join(root, "checks", "qualified.json");
+  const check = JSON.parse(await fs.readFile(file, "utf8"));
+  check.testedAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+  await fs.writeFile(file, JSON.stringify(check));
+  let refreshed = 0;
+  const result = await resolveAutomaticRoute(store, { input: "Implement a backend endpoint" }, {
+    refreshAutomaticCheck: async (candidate) => {
+      assert.equal(candidate.id, route.id);
+      refreshed += 1;
+      await fs.writeFile(file, JSON.stringify({ ...check, testedAt: new Date().toISOString() }));
+    },
+  });
+  assert.equal(result.route.id, route.id);
+  assert.equal(refreshed, 1);
+});
+
 test("hard tasks need overall quality, quota failures stay excluded, long context is not inferred", async (t) => {
   const { store, root, route } = await fixture(t);
   const file = path.join(root, "validation", "qualified.json");
@@ -99,6 +117,19 @@ test("a temporary free-tier rate limit recovers after cooldown, but explicit quo
   assert.equal((await qualifiedAutomaticCandidates(store, ["backend"])).length, 1);
   await fs.writeFile(file, JSON.stringify([{ route: route.id, at: cooled, status: "failed", error: "额度不足或请求过于频繁（供应商说明：insufficient_quota）" }]));
   assert.equal((await qualifiedAutomaticCandidates(store, ["backend"])).length, 0);
+});
+
+test("a provider with no model endpoint stays out of auto until a later successful call", async (t) => {
+  const { store, root, route } = await fixture(t);
+  const file = path.join(root, "route-log.json");
+  const failedAt = new Date(Date.now() - 1000).toISOString();
+  await fs.writeFile(file, JSON.stringify([{ route: route.id, at: failedAt, status: "failed", error: "No endpoints found for upstream-model." }]));
+  assert.equal((await qualifiedAutomaticCandidates(store, ["backend"])).length, 0);
+  await fs.writeFile(file, JSON.stringify([
+    { route: route.id, at: failedAt, status: "failed", error: "No endpoints found for upstream-model." },
+    { route: route.id, at: new Date().toISOString(), status: "completed" },
+  ]));
+  assert.equal((await qualifiedAutomaticCandidates(store, ["backend"])).length, 1);
 });
 
 test("resolved route must match candidate slug, upstream model and provider; multiple roles fail", async (t) => {

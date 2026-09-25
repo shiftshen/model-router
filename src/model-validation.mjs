@@ -6,7 +6,7 @@ export const validationTasks = Object.freeze([
   {
     id: "planning",
     category: "planning",
-    prompt: "为一个已有 Node.js 项目设计‘模型能力自动验证’功能。只输出 JSON，不要写代码。字段必须包含 task_type、risks、steps、acceptance_tests；steps 至少 3 项，risks 至少 2 项。",
+    prompt: "为一个已有 Node.js 项目设计‘模型能力自动验证’功能。只输出 JSON，不要写代码。字段必须包含 task_type、risks、steps、acceptance_tests；task_type 必须是 planning，steps 至少 3 项，risks 至少 2 项。",
     checks: { task_type: "planning", minArray: ["steps", 3], minArray2: ["risks", 2] },
   },
   {
