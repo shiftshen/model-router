@@ -91,6 +91,26 @@ function unavailableModelFailure(error) {
   return /No endpoints found for\b|not supported by any configured account in this group/i.test(detail);
 }
 
+function knownNoApiCharge(route) {
+  const url = new URL(route.endpoint);
+  const local = route.noKey && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  return local || (url.hostname === "openrouter.ai" && (route.model.endsWith(":free") || route.model === "openrouter/free"));
+}
+
+async function approvedPaidRoutes(root) {
+  let config;
+  try { config = JSON.parse(await fs.readFile(path.join(root, "auto-routing-runtime.json"), "utf8")); }
+  catch (error) {
+    if (error.code === "ENOENT") return new Set();
+    throw automaticError("auto_cost_policy_invalid", "自动选模费用设置无效；已阻止付费调用");
+  }
+  const ids = config?.autoApprovedPaidRoutes ?? [];
+  if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(id))) {
+    throw automaticError("auto_cost_policy_invalid", "自动选模费用设置无效；已阻止付费调用");
+  }
+  return new Set(ids);
+}
+
 export async function qualifiedAutomaticCandidates(store, requiredCategories, profile = {}, { allowStaleCheck = false } = {}) {
   const routes = (await store.read()).routes;
   const table = buildRouterTable(routes);
@@ -169,7 +189,7 @@ export async function qualifiedAutomaticCandidates(store, requiredCategories, pr
         id: slug, modelId: route.model, provider: route.id,
         capabilities, modalities: ["text"], languages: ["zh", "en"],
         contextWindow: resolveContextWindow(route), maxOutput: 4096,
-        costTier: route.noKey ? 1 : 3, latencyTier: 3,
+        costTier: knownNoApiCharge(route) ? 1 : 3, latencyTier: 3,
         privacy: local ? "local" : "remote",
         status: "qualified", credentialStatus: "active",
       },
@@ -241,17 +261,24 @@ export async function recommendWithEngineCLI(enginePath, input, root) {
 export async function resolveAutomaticRoute(store, payload, { recommendAutomatic, enginePath, refreshAutomaticCheck } = {}) {
   const { category, requiredCategories, profile } = profileFromPayload(payload);
   if (profile.modalities.includes("image")) throw automaticError("auto_no_qualified_model", "当前模型能力验证未覆盖图片任务");
-  let qualified = await qualifiedAutomaticCandidates(store, requiredCategories, profile);
+  const approvedPaid = await approvedPaidRoutes(store.root);
+  const withinBudget = (entry) => knownNoApiCharge(entry.route) || approvedPaid.has(entry.route.id);
+  let availableQualified = await qualifiedAutomaticCandidates(store, requiredCategories, profile);
+  let qualified = availableQualified.filter(withinBudget);
   if (qualified.length < 2 && refreshAutomaticCheck) {
-    const stale = await qualifiedAutomaticCandidates(store, requiredCategories, profile, { allowStaleCheck: true });
+    const stale = (await qualifiedAutomaticCandidates(store, requiredCategories, profile, { allowStaleCheck: true })).filter(withinBudget);
     const refresh = stale.filter((entry) => !qualified.some((current) => current.route.id === entry.route.id))
       .sort((left, right) => right.score - left.score).slice(0, 2);
     for (const entry of refresh) {
       try { await refreshAutomaticCheck(entry.route); } catch { /* fail closed and try the next known candidate */ }
     }
-    if (refresh.length) qualified = await qualifiedAutomaticCandidates(store, requiredCategories, profile);
+    if (refresh.length) {
+      availableQualified = await qualifiedAutomaticCandidates(store, requiredCategories, profile);
+      qualified = availableQualified.filter(withinBudget);
+    }
   }
-  if (!qualified.length) throw automaticError("auto_no_qualified_model", "没有通过当前任务所需能力验证的模型，请先在应用中运行连接和能力验证");
+  if (!availableQualified.length) throw automaticError("auto_no_qualified_model", "没有通过当前任务所需能力验证的模型，请先在应用中运行连接和能力验证");
+  if (!qualified.length) throw automaticError("auto_no_budget_model", "本轮没有通过验证且可用的免费模型；自动模式已阻止未明确批准的付费路线，未调用收费模型。可手动选择具体模型。");
   // Local models are the emergency/low-cost fallback, not the primary route
   // while an independently billed API route is qualified for this turn.
   const remote = qualified.filter(({ candidate }) => candidate.privacy !== "local");

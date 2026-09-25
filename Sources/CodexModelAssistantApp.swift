@@ -19,6 +19,7 @@ struct ModelLibraryView: View {
     @State private var routeWindow: WorkWindow?
     @State private var didSizeWindow = false
     @State private var unmanagedDeleteTarget: UnmanagedWindow?
+    @State private var modelRefreshTarget: WorkWindow?
 
     // 首页回答的是「我有哪些窗口、现在能不能进去」，而不是「我有哪些模型」。
     // 模型配置是低频动作，收进「模型库」弹窗里改。
@@ -35,6 +36,19 @@ struct ModelLibraryView: View {
         .sheet(isPresented: $showTaskRunner) { TaskRunnerView(library: library) }
         .sheet(item: $routeWindow) { window in routeSheet(window) }
         .sheet(item: $renameTarget) { window in renameSheet(window) }
+        .confirmationDialog("刷新工作窗口的模型列表？", isPresented: Binding(
+            get: { modelRefreshTarget != nil },
+            set: { if !$0 { modelRefreshTarget = nil } }
+        ), titleVisibility: .visible) {
+            Button("刷新并重新打开原窗口") {
+                let id = modelRefreshTarget?.id ?? ""
+                modelRefreshTarget = nil
+                Task { await library.refreshWindowModels(id) }
+            }
+            Button("取消", role: .cancel) { modelRefreshTarget = nil }
+        } message: {
+            Text("会保留当前窗口的登录和全部会话，但会短暂关闭并重开该工作窗口。请先等正在运行的任务结束；有模型请求时系统会拒绝重开。")
+        }
         .confirmationDialog("确认删除这个单模型窗口？", isPresented: Binding(
             get: { unmanagedDeleteTarget != nil },
             set: { if !$0 { unmanagedDeleteTarget = nil } }
@@ -401,6 +415,7 @@ struct ModelLibraryView: View {
                 Button(running ? "切到最前" : "打开") { Task { await library.openWindow(window.id) } }
                     .buttonStyle(.borderedProminent).controlSize(.small).disabled(library.busy)
                 if running {
+                    Button("刷新模型列表") { modelRefreshTarget = window }.controlSize(.small).disabled(library.busy)
                     Button("关闭") { Task { await library.closeWindow(window.id) } }.controlSize(.small).disabled(library.busy)
                 }
                 Button("本窗口路线") { routeWindow = window; Task { await library.refreshRoutes() } }

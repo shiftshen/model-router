@@ -14,7 +14,7 @@ async function listen(server, t) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-async function fixture(t, { qualify = true, recommendAutomatic, failModel = "", failStatus = 429, failMode = "", primaryProtocol = "chat" } = {}) {
+async function fixture(t, { qualify = true, recommendAutomatic, failModel = "", failStatus = 429, failMode = "", primaryProtocol = "chat", approvePaid = true } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "gateway-auto-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   let hits = 0;
@@ -54,6 +54,7 @@ async function fixture(t, { qualify = true, recommendAutomatic, failModel = "", 
   await store.read();
   await store.save({ id: "real", name: "真实模型", endpoint: upstream, protocol: primaryProtocol, model: "real-model", credentialID: "real", contextWindow: 128000 }, 1, "test-key");
   const route = await store.route("real");
+  if (approvePaid) await fs.writeFile(path.join(root, "auto-routing-runtime.json"), JSON.stringify({ autoApprovedPaidRoutes: ["real", "backup"] }));
   if (qualify) {
     await fs.mkdir(path.join(root, "checks"));
     await fs.mkdir(path.join(root, "validation"));
@@ -76,6 +77,15 @@ test("explicit model bypasses automatic recommender", async (t) => {
   const result = await app.send(app.route.routerSlug);
   assert.equal(result.status, 200, JSON.stringify(result.body));
   assert.equal(app.hits(), 1);
+});
+
+test("gateway auto refuses an unapproved paid model without contacting upstream", async (t) => {
+  const app = await fixture(t, { approvePaid: false });
+  const result = await app.send(automaticModelSlug);
+  assert.equal(result.status, 409);
+  assert.equal(result.body.error.code, "auto_no_budget_model");
+  assert.equal(app.hits(), 0);
+  assert.equal((await app.send(app.route.routerSlug)).status, 200, "explicit manual selection remains available");
 });
 
 test("auto resolves qualified model and records requested and actual route", async (t) => {
@@ -160,7 +170,7 @@ test("auto stream switches on no-endpoints 404 and avoids the dead model next tu
   await fs.writeFile(path.join(app.root, "checks", "backup.json"), JSON.stringify({ ok: true, testedAt: new Date().toISOString(), endpoint: backup.endpoint, model: backup.model, protocol: backup.protocol, credentialVersion: await app.store.credentialVersion(backup.credentialID) }));
   await fs.writeFile(path.join(app.root, "validation", "backup.json"), JSON.stringify({ mode: "live", score: 90, testedAt: new Date().toISOString(), routeId: backup.id, model: backup.model, endpoint: backup.endpoint, protocol: backup.protocol, credentialVersion: await app.store.credentialVersion(backup.credentialID), byCategory: { planning: 100, backend: 100 } }));
   const first = await app.send(automaticModelSlug, true);
-  assert.equal(first.status, 200);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
   assert.match(first.body, /ROUTED/);
   const log = JSON.parse(await fs.readFile(path.join(app.root, "route-log.json"), "utf8"));
   assert.deepEqual(log.map((entry) => entry.route), ["real", "backup"]);
@@ -183,25 +193,25 @@ test("auto stream hides a partial failed answer and switches to a qualified back
   await fs.writeFile(path.join(app.root, "checks", "backup.json"), JSON.stringify({ ok: true, testedAt: new Date().toISOString(), endpoint: backup.endpoint, model: backup.model, protocol: backup.protocol, credentialVersion: await app.store.credentialVersion(backup.credentialID) }));
   await fs.writeFile(path.join(app.root, "validation", "backup.json"), JSON.stringify({ mode: "live", score: 90, testedAt: new Date().toISOString(), routeId: backup.id, model: backup.model, endpoint: backup.endpoint, protocol: backup.protocol, credentialVersion: await app.store.credentialVersion(backup.credentialID), byCategory: { planning: 100, backend: 100 } }));
   const result = await app.send(automaticModelSlug, true);
-  assert.equal(result.status, 200);
+  assert.equal(result.status, 200, JSON.stringify(result.body));
   assert.match(result.body, /ROUTED/);
   assert.doesNotMatch(result.body, /PARTIAL_FROM_FAILED_MODEL/);
 });
 
 test("auto Responses stream also hides partial output before switching", async (t) => {
-  const app = await fixture(t, { failModel: "real-model", failMode: "partial-stream", primaryProtocol: "responses" });
+  const app = await fixture(t, { failModel: "real-model", failMode: "partial-stream", primaryProtocol: "responses", recommendAutomatic: async ({ candidates }) => ({ mode: "advisory", status: "resolved", selected: { id: candidates[0].id, modelId: candidates[0].modelId, provider: candidates[0].provider }, roles: [] }) });
   await app.store.save({ id: "backup", name: "合格备用", endpoint: app.upstream, protocol: "chat", model: "backup-model", credentialID: "backup", contextWindow: 128000 }, (await app.store.read()).revision, "backup-key");
   const backup = await app.store.route("backup");
   await fs.writeFile(path.join(app.root, "checks", "backup.json"), JSON.stringify({ ok: true, testedAt: new Date().toISOString(), endpoint: backup.endpoint, model: backup.model, protocol: backup.protocol, credentialVersion: await app.store.credentialVersion(backup.credentialID) }));
   await fs.writeFile(path.join(app.root, "validation", "backup.json"), JSON.stringify({ mode: "live", score: 90, testedAt: new Date().toISOString(), routeId: backup.id, model: backup.model, endpoint: backup.endpoint, protocol: backup.protocol, credentialVersion: await app.store.credentialVersion(backup.credentialID), byCategory: { planning: 100, backend: 100 } }));
   const result = await app.send(automaticModelSlug, true);
-  assert.equal(result.status, 200);
+  assert.equal(result.status, 200, result.body);
   assert.match(result.body, /ROUTED/);
   assert.doesNotMatch(result.body, /PARTIAL_FROM_FAILED_MODEL/);
 });
 
 test("auto Responses stream switches when a required tool call is missing", async (t) => {
-  const app = await fixture(t, { failModel: "real-model", failMode: "missing-tool", primaryProtocol: "responses" });
+  const app = await fixture(t, { failModel: "real-model", failMode: "missing-tool", primaryProtocol: "responses", recommendAutomatic: async ({ candidates }) => ({ mode: "advisory", status: "resolved", selected: { id: candidates[0].id, modelId: candidates[0].modelId, provider: candidates[0].provider }, roles: [] }) });
   const primaryValidation = path.join(app.root, "validation", "real.json");
   const primaryReport = JSON.parse(await fs.readFile(primaryValidation, "utf8"));
   await fs.writeFile(primaryValidation, JSON.stringify({ ...primaryReport, byCategory: { ...primaryReport.byCategory, tool_use: 100 } }));
@@ -213,7 +223,7 @@ test("auto Responses stream switches when a required tool call is missing", asyn
     tool_choice: "required",
     tools: [{ type: "function", name: "report_step", parameters: { type: "object", properties: { step: { type: "string" } } } }],
   });
-  assert.equal(result.status, 200);
+  assert.equal(result.status, 200, result.body);
   assert.match(result.body, /ROUTED/);
   assert.doesNotMatch(result.body, /No tool/);
 });
